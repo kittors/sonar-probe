@@ -1,0 +1,23 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.local
+
+# 采集端二进制：构建产物，12MB 且每次重编都是全量 diff。
+# 面板要托管它们分发给新机器，由 `pnpm agent:build` 现场生成，见 README。
+apps/dashboard/public/sonar-agent-linux-*
+
+# 编辑器/工具的本地配置
+.claude/
+.vscode/
+.idea/
+
+# 构建信息
+*.tsbuildinfo

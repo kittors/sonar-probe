@@ -1,0 +1,269 @@
+# Sonar
+
+卡片式 VPS 探针面板。除了常规的机器监控，重点做了两件多数探针不做的事：**流量归因**（哪个服务、哪个 IP 把带宽吃掉了）和**可回溯的实时封禁**。
+
+视觉上参照 DeepSeek 官网的设计语言：近白冷调底、毛玻璃卡片、极细边框、克制的阴影和动效，主色只在关键处出现。亮色/深色双主题。所有图表、图标、下拉、日历都是自绘的，没有引图表库或 UI 库。
+
+```
+┌─ 概览页 ──────────────────────────────────────┐
+│  汇总条：在线数 / 实时带宽 / 周期流量 / 封禁 / 成本 │
+│  卡片网格：每台机器一张，CPU 趋势线 + 三项占用     │
+│           + 实时收发 + 流量配额 + 到期提醒        │
+│  事件流                                        │
+└───────────────────────────────────────────────┘
+              ↓ 点卡片进入
+┌─ 详情页（分三个标签）────────────────────────────┐
+│  常驻：实时快照 —— CPU / 内存 / 磁盘 / 负载 四个环 │
+│  负载：四张曲线图，可切 15 分钟 ~ 24 小时         │
+│  流量：日流量柱状图 + 按进程/服务的归因排行        │
+│  安全：对端 IP 排行（含威胁评分）+ 封禁规则        │
+└───────────────────────────────────────────────┘
+```
+
+## 它和 nezha 之类探针的区别
+
+| | 常见探针 | Sonar |
+|---|---|---|
+| 流量 | 只有总量 | 拆到进程/服务，再拆到对端 IP |
+| 流量周期 | 固定自然月 | 可按开通日重置，支持人工校准补齐装探针前的用量 |
+| 异常来源 | 看不到 | 威胁评分 + 可解释的判定依据 |
+| 处置 | 自己 ssh 上去敲 iptables | 面板里点，带预检和二次确认 |
+| 封禁有效期 | 手动清理 | 交给 nftables set timeout，内核自动解封 |
+| 权限 | 全有或全无 | 19 个能力点，按钮级控制，带审计日志 |
+
+## 安装
+
+两个脚本，都是幂等的，重复执行只更新产物不动数据。
+
+### 面板
+
+```bash
+sudo ./scripts/install-panel.sh --from-source . --domain sonar.example.com
+```
+
+它会装好 Node 运行时（用官方 tarball，不污染系统包）、建专用系统用户、写好带沙箱的 systemd 单元、生成 agent token，顺带配 nginx 反代和 Let's Encrypt 证书。
+
+不想要 nginx 就去掉 `--domain`，面板只监听 `127.0.0.1:8787`，自己接反代。
+
+装完的配置在 `/opt/sonar/server/data/panel.env`，里面有生成好的 `SONAR_AGENT_TOKEN`。
+
+### 采集端
+
+在每台要监控的机器上：
+
+```bash
+sudo ./scripts/install-agent.sh \
+  --panel https://sonar.example.com \
+  --token <面板生成的 token> \
+  --id hkg-edge-01 \
+  --name "香港 · 边缘节点"
+```
+
+装之前可以先探路，这一步不装任何东西也不改任何配置：
+
+```bash
+sudo ./scripts/install-agent.sh --check-only
+```
+
+它会告诉你这台机器能采到什么。**特别是流量归因能不能用** —— 这一项在很多机器上是采不到的，而且失败得很安静：CPU、内存、网络一切正常，唯独「对端 IP 流量」永远是空的。原因见下一节。
+
+默认封禁是只读的：面板下发的 enforce 指令只会打印不会真改防火墙。确认流程没问题后加 `--enforce` 重跑即可放开。
+
+### 从源码跑
+
+```bash
+pnpm install
+```
+
+```bash
+pnpm dev
+```
+
+面板 http://localhost:5273 ，接口在 8787。
+
+开发时想要一屏有数据的图，可以打开内置模拟器：
+
+```bash
+SONAR_SIMULATOR=1 pnpm dev:server
+```
+
+它会生成 12 台虚构机器并回填 30 天流量和 24 小时曲线。**默认是关的** —— 不显式打开就不会有任何虚构数据，免得真机和假机混在一起。
+
+## 流量归因是怎么做到的
+
+Linux 没有"每进程用了多少流量"的现成接口，Sonar 靠三张表拼出来：
+
+| 数据源 | 提供什么 |
+|---|---|
+| `/proc/net/nf_conntrack` | 每条连接的双向字节数 |
+| `/proc/net/{tcp,udp}*` | 本地端口 → socket inode |
+| `/proc/<pid>/fd/*` | socket inode → 进程 |
+
+顺着这条链把 conntrack 里的本地端口找到进程，就得到进程级流量；按对端地址聚合，就得到 IP 级流量。两者是同一份数据的两个视角。
+
+### 前置条件（很容易缺）
+
+**一、conntrack 要开字节计数。**
+
+```bash
+sysctl -w net.netfilter.nf_conntrack_acct=1
+```
+
+不开的话 conntrack 里每条连接的 `bytes` 恒为 0。
+
+**二、conntrack 得真的在跟踪连接。**
+
+这一条最反直觉：**模块加载了不等于在工作**。conntrack 是按需启用的 —— 必须有 netfilter 规则引用它，内核才会开始记账。一台没装任何防火墙规则的干净云主机上，`lsmod` 能看到 `nf_conntrack`，但 `/proc/net/nf_conntrack` 永远是空的。
+
+怎么判断：
+
+```bash
+awk '/^nf_conntrack /{print "引用计数:", $3}' /proc/modules
+```
+
+引用计数为 0 就说明没有任何规则在用它，表不会有数据。
+
+给内核一个开始跟踪的理由，最轻量的做法是加一条只计数、不拦截、不改变转发行为的规则：
+
+```bash
+nft add table inet sonar_ct
+nft add chain inet sonar_ct prerouting '{ type filter hook prerouting priority -300; policy accept; }'
+nft add rule inet sonar_ct prerouting ct state new counter
+```
+
+这是防火墙改动，安装脚本**不会**替你执行。动手前确认你有带外访问（VNC / 救援控制台）。
+
+**三、采集端需要 root**，否则读不了其他进程的 `/proc/<pid>/fd`。
+
+任一条件不满足时归因返回空，但不影响 CPU、内存、磁盘、网络这些基础指标。
+
+## 流量周期与校准
+
+很多 VPS 的流量额度不是按自然月重置，而是从开通日算。面板支持给每台机器单独设账单日（每月 1–31 号，月末会自动夹取 —— 设 31 号时 2 月落在 28/29 号）。
+
+另一个现实问题：探针总是中途才装的，装之前那段流量库里根本没有记录，面板的「已用」会一直比服务商账单小一截。所以有一个校准入口：填服务商后台此刻显示的真实值，系统存下**差额**而不是绝对值，后续增长照常实时累加，进入新周期后差额自动作废。
+
+## 封禁
+
+这是整个项目风险最高的功能，所以做了几层限制。
+
+**默认只生成不执行。** 面板里点封禁，默认产出的是 dry-run 规则：命令写进数据库存档，不下发。要真正生效，需要在对话框里勾选 enforce，再勾一次确认框，服务端还要求请求体里带 `confirm` 字段等于目标 IP。
+
+**预检拦截自伤操作。** 下面这些一律拒绝，并且把理由显示出来：
+
+- 环回、RFC1918 私有网段、链路本地（含云厂商元数据地址 `169.254.169.254`）、CGNAT
+- 目标机器自己的 IP
+- 你当前的出口 IP（封了自己就连不上了）
+- 面板地址（封了 agent 立刻失联）
+- 比 `/24` 更宽的网段（IPv6 是 `/48`）
+
+**目标地址必须是合法 IP 或 CIDR。** 用 `node:net` 做严格校验，`::1; whoami` 这类带 shell 元字符的输入在预检阶段就被拒掉，不会进入命令文本。
+
+**agent 不执行面板发来的命令字符串。** 面板下发的 `commands` 只用于展示和审计，agent 拿到 target 和 ttl 后自己重新构造 `exec.Command("nft", args...)` 的参数数组，不经过 shell。面板一旦被攻破，也没法借下发命令在机器上执行任意代码。agent 还会独立再跑一遍守卫检查 —— 两边任一认为危险就不执行。
+
+**agent 侧还有一道开关。** 不加 `-enforce` 启动时，收到 enforce 指令也只打印不执行。
+
+**有效期由内核管。** 规则写进 nftables 的 set 并带 `timeout`，到点内核自动解封。面板挂了、网络断了、agent 崩了，都不影响解封 —— 不会出现"面板没了机器被永久锁死"。
+
+## 登录与权限
+
+GitHub OAuth 登录，**第一个登录成功的人自动成为管理员**（用 `BEGIN IMMEDIATE` 事务保证并发下只会有一个）。也可以开访客登录，只能看概览。
+
+权限是 19 个能力点，不是粗粒度的角色开关。没有权限的东西**不渲染**，而不是渲染出来再禁用 —— 让人看见一个点不动的按钮只会制造困惑。敏感数据（完整 IP）在服务端就遮蔽掉了，前端打码不算数。
+
+管理后台能看到谁在线、谁看过什么、以及完整的操作审计日志。
+
+## 安全
+
+除了封禁那一节，还做了这些：
+
+- **CSP、X-Frame-Options、nosniff、Referrer-Policy** 由应用层下发，换反代或自部署都不会丢
+- **CORS 默认只放同源**，跨域来源要显式配 `SONAR_CORS_ORIGINS`
+- **限流**：访客登录每 IP 十分钟 5 次，agent 上报每分钟 60 次
+- **恒定时间比较** agent token 和会话凭据
+- 会话是 httpOnly + SameSite=lax cookie；退出登录会清掉前端的机器列表缓存
+- 用户填的外链（服务商控制台）前后端各校验一次协议，只放行 http/https
+
+跑安全回归测试：
+
+```bash
+cd apps/server && pnpm test
+```
+
+## 配置
+
+面板（`/opt/sonar/server/data/panel.env`）：
+
+| 环境变量 | 作用 |
+|---|---|
+| `SONAR_AGENT_TOKEN` | 采集端上报凭据。不设则整个上报通道关闭 |
+| `SONAR_SIMULATOR` | `1` 开启演示数据。默认关闭，生产不要设 |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub 登录 |
+| `SONAR_ALLOWLIST` | 额外的免封白名单，逗号分隔，支持 CIDR |
+| `SONAR_PANEL_IP` | 面板公网地址，用于阻止误封导致 agent 失联 |
+| `SONAR_DISABLE_GUEST` | `1` 关闭访客登录 |
+| `SONAR_CORS_ORIGINS` | 允许的跨域来源，逗号分隔。默认只允许同源 |
+| `SONAR_DB` | 数据库路径 |
+
+采集端：
+
+| 参数 | 作用 |
+|---|---|
+| `-enforce` | 允许真正修改防火墙。不加时封禁指令只打印 |
+| `-allow` | agent 侧白名单，逗号分隔，支持 CIDR |
+| `-interval` | 采样间隔秒数，默认 3 |
+| `-once` | 采集一次并打印，用于排查 |
+
+## 威胁评分
+
+评分不是黑盒。每一分都来自可解释的信号，面板会把判定依据原样列出来，让人在点封禁之前知道自己在封什么：
+
+- 每连接字节数过低（高连接 + 低流量 = 典型爆破/扫描）
+- 连接数绝对值过高
+- 命中远程登录或数据库端口（22 / 3389 / 5900 / 3306 / 6379 / 27017）
+- 已知威胁情报标记
+
+## 项目结构
+
+```
+apps/server/          面板服务：Fastify + WebSocket + SQLite
+  src/db.ts           表结构（用 Node 内置的 node:sqlite，无需编译原生模块）
+  src/store.ts        查询层
+  src/billing.ts      流量周期计算（账单日、月末夹取、跨年）
+  src/firewall.ts     封禁规则生成与预检 —— 安全上最要紧的一块
+  src/ratelimit.ts    限流
+  src/*.test.ts       周期计算、流量校准、安全回归
+apps/dashboard/       前端：Vite + React 19 + Tailwind v4
+  src/styles/theme.css      设计系统（间距刻度、排版层级、双主题）
+  src/components/charts/    图表，全部自绘 SVG
+  src/components/Select.tsx / DatePicker.tsx / Tooltip.tsx / Popover.tsx
+                            自绘控件。原生 select/date 展开后的面板由操作系统
+                            绘制，CSS 完全够不到，只能整套自己实现
+  public/flags/             国旗 SVG（flag-icons，MIT）
+agent/                采集端：Go，单文件二进制，无第三方依赖
+scripts/              安装脚本
+```
+
+## 开发
+
+```bash
+pnpm -r typecheck
+```
+
+```bash
+cd apps/server && pnpm test
+```
+
+```bash
+cd agent && go test ./...
+```
+
+agent 的测试需要 Linux（采集代码带 `//go:build linux`）。在 macOS 上可以用容器跑：
+
+```bash
+docker run --rm -v "$PWD":/src -w /src/agent golang:1.23 go test ./...
+```
+
+## 说明
+
+开启模拟器时生成的 IP、ASN 和组织名是为了展示流量归因和封禁流程构造的合成数据，威胁判定和归属信息不代表这些地址的真实情况。

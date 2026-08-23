@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Sonar · 服务器探针</title>
+    <meta name="description" content="卡片式 VPS 探针面板，带流量归因与实时封禁" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234D6BFE'/%3E%3Cpath d='M8 20c2.5 0 2.5-8 5-8s2.5 8 5 8 2.5-6 5-6' stroke='white' stroke-width='2.2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E" />
+    <!--
+      主题必须在样式表解析之前定下来，否则深色用户每次刷新都会先看到一帧白底。
+      这段是同步内联脚本，故意不打包 —— 打包后的 JS 要等模块加载，那时已经晚了。
+    -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('sonar-theme');
+          var theme =
+            saved === 'light' || saved === 'dark'
+              ? saved
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light';
+          document.documentElement.dataset.theme = theme;
+          // 首帧禁用过渡：页面刚落地时不该有任何动画，否则会看到颜色"渐入"
+          document.documentElement.dataset.themeBoot = '1';
+        } catch (e) {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

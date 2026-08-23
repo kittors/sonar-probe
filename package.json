@@ -1,0 +1,17 @@
+{
+  "name": "sonar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sonar — 卡片式 VPS 探针面板，带流量归因与实时封禁",
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "dev:server": "pnpm --filter @sonar/server dev",
+    "dev:dashboard": "pnpm --filter @sonar/dashboard dev",
+    "build": "pnpm --filter @sonar/server build && pnpm --filter @sonar/dashboard build",
+    "agent:build": "cd agent && go build -o ../dist/sonar-agent ."
+  },
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
