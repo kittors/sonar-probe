@@ -8,7 +8,17 @@ import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import type { WebSocket } from 'ws';
 
-import { db, pruneMetrics, purgeSimulatedData } from './db.js';
+import { db, pruneAuditLog, pruneMetrics, purgeSimulatedData } from './db.js';
+import { refreshRates, refreshRatesIfStale, ratesPayload } from './rates.js';
+import {
+  COMMON_TIMEZONES,
+  CURRENCIES,
+  CURRENCY_META,
+  DEFAULT_SETTINGS,
+  getSettings,
+  updateSettings,
+  type Settings,
+} from './settings.js';
 import { seedDatabase, tick, ensureRuntimeLoaded } from './sim/simulator.js';
 import {
   createRule,
@@ -89,7 +99,7 @@ import {
   type RuleScope,
 } from './traffic-rules.js';
 import { ensureSetupToken, setupTokenValid, writeOAuthCredentials } from './setup.js';
-import type { BlockMode, NodeState, ServerMessage } from './types.js';
+import type { BlockMode, NodeState, PublicSettings, ServerMessage } from './types.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? '127.0.0.1';
@@ -343,6 +353,34 @@ function sanitizeNodes(nodes: NodeState[], caps: Set<Capability>): NodeState[] {
   return nodes.map((n) => sanitizeNode(n, caps));
 }
 
+/**
+ * 展示口径。REST 和 WebSocket 共用同一份构造 —— 两处各拼一遍迟早会分叉，
+ * 而分叉的表现是"刷新一下数字就变了"，极难被认出是同步问题。
+ */
+function publicSettings(): PublicSettings {
+  const s = getSettings();
+  const r = ratesPayload();
+  return {
+    panelName: s.panelName,
+    panelTagline: s.panelTagline,
+    displayCurrency: s.displayCurrency,
+    costIncludeExpired: s.costIncludeExpired,
+    byteBase: s.byteBase,
+    binaryUnitLabels: s.binaryUnitLabels,
+    trafficDirection: s.trafficDirection,
+    timezone: s.timezone,
+    expiryWarnDays: s.expiryWarnDays,
+    quotaWarnPercent: s.quotaWarnPercent,
+    rates: r.rates,
+    ratesMeta: {
+      fetchedAt: r.fetchedAt,
+      source: r.source,
+      usingFallback: r.usingFallback,
+      stale: r.stale,
+    },
+  };
+}
+
 // ————————————————————————————————————————————————————————
 // WebSocket
 // ————————————————————————————————————————————————————————
@@ -378,6 +416,9 @@ app.get('/ws', { websocket: true }, (socket, req) => {
   const ctx = loadSession(req.cookies[cookieName]) ?? ANONYMOUS;
 
   clients.set(socket, ctx);
+  // 口径先于数据发出去：晚一步的话客户端会先拿旧口径渲染一次快照，
+  // 再因为设置到位而整页重排，那一下跳变正是缓存机制想避免的
+  socket.send(JSON.stringify({ type: 'settings', settings: publicSettings() }));
   socket.send(
     JSON.stringify({
       type: 'snapshot',
@@ -1010,6 +1051,99 @@ app.get<{ Querystring: { user?: string } }>(
 );
 
 // ————————————————————————————————————————————————————————
+// 通用设置
+// ————————————————————————————————————————————————————————
+
+/**
+ * 展示口径，对所有人开放。
+ *
+ * 这一份必须匿名可读：概览页是公开状态页，未登录的人也要看到流量数字。
+ * 而"1.83 TB"到底按 1024 还是 1000 算出来的，属于渲染这个数字的必要前提 ——
+ * 拿不到就只能猜，猜错了整页数字都偏 10%。
+ *
+ * 里面没有任何敏感项：保留策略、汇率覆盖明细这些只在下面那条带权限的接口里给。
+ */
+app.get('/api/settings/public', async () => publicSettings());
+
+/** 完整设置 + 设置页要用的选项清单。 */
+app.get('/api/settings', { preHandler: requireCap('settings:view') }, async () => ({
+  settings: getSettings(),
+  defaults: DEFAULT_SETTINGS,
+  rates: ratesPayload(),
+  options: {
+    currencies: CURRENCIES.map((c) => ({ value: c, ...CURRENCY_META[c] })),
+    timezones: COMMON_TIMEZONES,
+  },
+}));
+
+app.patch<{ Body: Partial<Settings> }>(
+  '/api/settings',
+  { preHandler: requireCap('settings:manage') },
+  async (req) => {
+    const before = getSettings();
+    const next = updateSettings(req.body ?? {});
+
+    // 只记真正变了的字段。把整个设置对象塞进审计详情，下次改一项也要在
+    // 二十行 JSON 里找出是哪一项动了
+    const changed = (Object.keys(next) as Array<keyof Settings>).filter(
+      (k) => JSON.stringify(before[k]) !== JSON.stringify(next[k]),
+    );
+
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'settings.update',
+      target: changed.join(', ') || '无变化',
+      detail: changed.map((k) => `${String(k)}=${JSON.stringify(next[k])}`).join(' '),
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+
+    if (changed.length > 0) {
+      logEvent(
+        null,
+        'info',
+        'settings',
+        `${req.auth!.user.login || req.auth!.user.name} 修改了通用设置：${changed.join('、')}`,
+      );
+      /*
+       * 口径变了要立刻推两样东西。
+       *
+       * 一是新口径本身 —— 页面上每个数字的渲染都依赖它，而且它必须发给
+       * 所有人（包括匿名访客），不然两个人对着同一台机器会读出差 10% 的数字；
+       * 二是重算过的节点数据 —— 流量方向、时区、告警阈值都会改变
+       * listNodeStates 的输出，不推的话要等到下一个 tick 才生效，
+       * 而管理员正是在这一刻盯着页面看改动有没有效果。
+       */
+      broadcast(() => ({ type: 'settings', settings: publicSettings() }));
+      const nodes = listNodeStates();
+      broadcast((caps) => ({ type: 'tick', nodes: sanitizeNodes(nodes, caps), ts: Date.now() }));
+    }
+
+    return { settings: next, rates: ratesPayload() };
+  },
+);
+
+/** 手动拉一次汇率。改完覆盖值想立刻看效果时用得上。 */
+app.post(
+  '/api/settings/rates/refresh',
+  { preHandler: requireCap('settings:manage') },
+  async (req) => {
+    const snap = await refreshRates();
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'settings.rates',
+      target: snap.source || '拉取失败',
+      detail: snap.lastError,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    return ratesPayload();
+  },
+);
+
+// ————————————————————————————————————————————————————————
 // 采集端上报
 //
 // 这几个接口不走用户会话，用独立的 agent token 认证。
@@ -1185,9 +1319,27 @@ setInterval(() => {
     const ev = logEvent(null, 'info', 'unblock', `${expired} 条封禁规则到期自动解除`);
     broadcast(() => ({ type: 'event', event: ev }));
   }
-  pruneMetrics();
+  // 保留策略由设置决定，每次都重新读 —— 管理员改完不用等重启
+  const { metricRetentionHours, auditRetentionDays } = getSettings();
+  pruneMetrics(metricRetentionHours);
+  pruneAuditLog(auditRetentionDays);
   pruneSessions();
 }, 60_000);
+
+/*
+ * 汇率。
+ *
+ * 一天一次足够 —— 月度成本是个用来判断"这堆机器大概花多少钱"的数字，
+ * 追实时汇率没有意义。真正重要的是别让它停在几个月前还装作是新的，
+ * 所以拉取时间会一路带到界面上。
+ *
+ * 每小时问一次 shouldRefresh，它内部按"超过 24 小时才拉、失败后至少隔 30 分钟"
+ * 决定要不要真的发请求；关掉自动更新时它直接回 false，一个包也不会发出去。
+ */
+void refreshRatesIfStale();
+setInterval(() => {
+  void refreshRatesIfStale();
+}, 3600_000);
 
 // 流量阈值检查。频率不用高 —— 日/月用量不会在几秒内跨过阈值
 setInterval(() => {

@@ -10,6 +10,7 @@ import {
   bytes,
   clockTime,
   count,
+  isNearQuota,
   money,
   percent,
   rate,
@@ -645,7 +646,10 @@ export function NodeDetail() {
                       .join(' · ')
                   }
                   color={
-                    node.trafficQuota > 0 && node.trafficUsed / node.trafficQuota > 0.85
+                    // 门槛跟设置里的「配额提醒」走。写死 0.85 的话，这台机器
+                    // 在概览页已经被标成"接近配额"，点进详情却还是黑字
+                    node.trafficQuota > 0 &&
+                    isNearQuota(ratio(node.trafficUsed, node.trafficQuota))
                       ? 'var(--color-warn)'
                       : undefined
                   }

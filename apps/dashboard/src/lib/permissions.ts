@@ -36,6 +36,13 @@ export const CAPABILITIES = {
   'audit:view': { label: '查看访问审计与在线用户', group: '管理', risk: 'medium' },
   'user:view': { label: '查看用户列表', group: '管理', risk: 'medium' },
   'user:manage': { label: '改用户角色与权限', group: '管理', risk: 'high' },
+  'settings:view': { label: '查看通用设置', group: '管理', risk: 'low' },
+  /*
+   * 改设置算高危，理由不在"能改坏页面"，而在两件有实际后果的事：
+   * 改流量口径会让所有人的配额百分比一起变（可能把一台快超额的机器
+   * 显示成安全的），改保留天数会真的删掉指标和审计记录。
+   */
+  'settings:manage': { label: '修改通用设置（口径、阈值、保留策略）', group: '管理', risk: 'high' },
 } as const;
 
 export type Capability = keyof typeof CAPABILITIES;
@@ -64,12 +71,20 @@ export const ASSIGNABLE_ROLES: Role[] = ['admin', 'operator', 'viewer', 'guest']
 export const ROLE_CAPABILITIES: Record<Role, Capability[]> = {
   admin: ALL_CAPABILITIES,
 
+  /*
+   * 运维能看设置但不能改。
+   *
+   * 他要按面板上的数字做判断，就得知道这些数字是按什么口径算出来的 ——
+   * "1.83 TB / 2 TB"到底安不安全，取决于进制是 1024 还是 1000。
+   * 但改口径影响的是所有人看到的所有数字，那是管理员的决定。
+   */
   operator: [
     'node:list', 'node:detail', 'node:full_ip', 'node:hardware', 'node:manage',
     'traffic:daily', 'traffic:services', 'traffic:peers',
     'block:view', 'block:preflight', 'block:dryrun', 'block:enforce', 'block:remove',
     'alert:view', 'alert:manage',
     'audit:view',
+    'settings:view',
   ],
 
   viewer: [
@@ -77,6 +92,7 @@ export const ROLE_CAPABILITIES: Record<Role, Capability[]> = {
     'traffic:daily', 'traffic:services', 'traffic:peers',
     'block:view',
     'alert:view',
+    'settings:view',
   ],
 
   guest: [

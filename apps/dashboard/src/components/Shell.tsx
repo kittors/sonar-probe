@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Logo, IconChevronDown, IconGlobe, IconMoon, IconShield, IconSun } from './icons';
 import { Modal } from './Modal';
 import { useLive } from '../lib/live';
+import { useSettings } from '../lib/settings';
 import { toggleTheme, useTheme } from '../lib/theme';
 import { useAuth } from '../lib/auth';
 import type { ConnState } from '../lib/live';
@@ -25,6 +26,15 @@ const CONN_COLOR: Record<ConnState, string> = {
 export function Shell({ children }: { children: ReactNode }) {
   const theme = useTheme();
   const { conn } = useLive();
+  const settings = useSettings();
+
+  // 标签页标题跟着面板名走。自部署的人常同时开着好几个面板，
+  // 全都叫 "Sonar" 的话，标签栏上根本分不出哪个是哪个
+  useEffect(() => {
+    document.title = settings.panelTagline
+      ? `${settings.panelName} · ${settings.panelTagline}`
+      : settings.panelName;
+  }, [settings.panelName, settings.panelTagline]);
 
   return (
     <div style={{ minHeight: '100%', position: 'relative', isolation: 'isolate' }}>
@@ -79,9 +89,12 @@ export function Shell({ children }: { children: ReactNode }) {
                 className="ds-text-subtitle text-ds-primary"
                 style={{ letterSpacing: '-0.015em' }}
               >
-                Sonar
+                {settings.panelName}
               </span>
-              <span className="ds-text-xs text-ds-description">服务器探针</span>
+              {/* 副标题可以被清空 —— 有人就是不想要那行小字 */}
+              {settings.panelTagline && (
+                <span className="ds-text-xs text-ds-description">{settings.panelTagline}</span>
+              )}
             </span>
           </Link>
 

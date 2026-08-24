@@ -7,7 +7,9 @@ import { EnrollDialog } from '../components/EnrollDialog';
 import { Tooltip } from '../components/Tooltip';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
-import { ago, bytes, count, money, rate } from '../lib/format';
+import { ago, bytes, count, moneyTotal, rate } from '../lib/format';
+import { CURRENCY_META, monthlyCostOf, normalizeCurrency } from '../lib/currency';
+import { useSettings } from '../lib/settings';
 import type { EventLog, NodeState, NodeStatus } from '../lib/types';
 
 type Filter = 'all' | NodeStatus;
@@ -19,6 +21,7 @@ const VIEW_KEY = 'sonar-view';
 export function Overview() {
   const { nodes, events, conn } = useLive();
   const { can } = useAuth();
+  const settings = useSettings();
   const canViewBlocks = can('block:view');
   const [filter, setFilter] = useState<Filter>('all');
   const [sort, setSort] = useState<Sort>('status');
@@ -95,24 +98,64 @@ export function Overview() {
   }, [nodes, filter, query, sort]);
 
   const totals = useMemo(() => {
+    const now = Date.now();
     const rx = nodes.reduce((a, n) => a + (n.metric?.netRx ?? 0), 0);
     const tx = nodes.reduce((a, n) => a + (n.metric?.netTx ?? 0), 0);
     const traffic = nodes.reduce((a, n) => a + n.trafficUsed, 0);
-    const cost = nodes.reduce((a, n) => {
-      const d = n.billingCycle === 'yearly' ? 12 : n.billingCycle === 'quarterly' ? 3 : 1;
-      return a + n.price / d;
-    }, 0);
+
+    /*
+     * 月度成本。
+     *
+     * 原来这里是 `a + n.price / d` —— 不看币种，把各国货币的面值直接相加，
+     * 再统一标一个美元符号。三台机器分别 12.9 美元、52 欧元、180 人民币时，
+     * 它给出 "$244.90"，而真实支出约合 90 美元。那不是估算不准，是没有单位。
+     *
+     * 现在按面板设置的展示币种逐台折算。算法和服务端 store.ts 的
+     * monthlyCostOf 是同一套 —— 之所以前端再算一次而不是直接用汇总接口，
+     * 是因为机器列表走 WebSocket 实时推送，再拉一次 REST 会让
+     * "在线 3/3"和"月度成本"来自两个不同时刻的快照。
+     */
+    const billable = settings.costIncludeExpired
+      ? nodes
+      : nodes.filter((n) => n.expireAt <= 0 || n.expireAt > now);
+
+    const cost = billable.reduce(
+      (a, n) => a + monthlyCostOf(n, settings.displayCurrency, settings.rates),
+      0,
+    );
+    const pricedNodes = billable.filter((n) => n.price > 0).length;
+
+    // 换算前各币种各是多少。汇总数字换过算，人总会想核对一下原值
+    const byCurrency = new Map<string, number>();
+    for (const n of billable) {
+      if (!(n.price > 0)) continue;
+      const code = normalizeCurrency(n.currency);
+      byCurrency.set(code, (byCurrency.get(code) ?? 0) + monthlyCostOf(n, code, settings.rates));
+    }
+    const mixedCurrency = byCurrency.size > 1;
+
+    /*
+     * 即将到期和已经过期要分开数。
+     *
+     * 原来的判定是 `expireAt - now < 窗口`，负数天然满足，于是一台过期 30 天的
+     * 机器会被数进"7 天内到期"里 —— 那句话对它是错的，而且两者需要的动作不同：
+     * 即将到期是"该续费了"，已过期是"要么续要么从面板上删掉"。
+     */
     const expiring = nodes.filter(
-      (n) => n.expireAt > 0 && n.expireAt - Date.now() < 7 * 86_400_000,
+      (n) => n.expireAt > now && n.expireAt - now < settings.expiryWarnDays * 86_400_000,
     ).length;
+    const expired = nodes.filter((n) => n.expireAt > 0 && n.expireAt <= now).length;
     const overQuota = nodes.filter(
-      (n) => n.trafficQuota > 0 && n.trafficUsed / n.trafficQuota > 0.8,
+      (n) => n.trafficQuota > 0 && (n.trafficUsed / n.trafficQuota) * 100 > settings.quotaWarnPercent,
     ).length;
     const hasQuota = nodes.some((n) => n.trafficQuota > 0);
     // 机器之间账单日不一致时，这个合计跨的不是同一段时间，得说明一下
     const mixedCycle = new Set(nodes.map((n) => n.cycleStart)).size > 1;
-    return { rx, tx, traffic, cost, expiring, overQuota, hasQuota, mixedCycle };
-  }, [nodes]);
+    return {
+      rx, tx, traffic, cost, pricedNodes, byCurrency, mixedCurrency,
+      expiring, expired, overQuota, hasQuota, mixedCycle,
+    };
+  }, [nodes, settings]);
 
   const loading = conn !== 'live' && nodes.length === 0;
 
@@ -212,12 +255,28 @@ export function Overview() {
             loading={loading}
           />
         )}
-        {totals.cost > 0 && (
+        {totals.pricedNodes > 0 && (
           <SummaryCell
             label="月度成本"
-            value={money(totals.cost, 'USD')}
-            hint={totals.expiring > 0 ? `${totals.expiring} 台 7 天内到期` : undefined}
-            tone={totals.expiring > 0 ? 'warn' : undefined}
+            value={
+              /*
+               * 多币种时把换算前的原值挂在提示里。
+               *
+               * 折算成一个数字是为了能一眼看出量级，但汇率总有出入，
+               * 真要去对账单的人需要的是"欧元那台到底多少欧元"。
+               */
+              totals.mixedCurrency || settings.ratesMeta.usingFallback ? (
+                <Tooltip content={costTooltip(totals.byCurrency, settings)} maxWidth={320}>
+                  <span style={{ borderBottom: '1px dashed var(--ds-border-strong, var(--ds-border))' }}>
+                    {moneyTotal(totals.cost, settings.displayCurrency)}
+                  </span>
+                </Tooltip>
+              ) : (
+                moneyTotal(totals.cost, settings.displayCurrency)
+              )
+            }
+            hint={costHint(totals, settings)}
+            tone={totals.expiring > 0 || totals.expired > 0 ? 'warn' : undefined}
             loading={loading}
           />
         )}
@@ -401,6 +460,48 @@ export function Overview() {
       {enrolling && <EnrollDialog onClose={() => setEnrolling(false)} />}
     </>
   );
+}
+
+/**
+ * 月度成本那一格的说明文字。
+ *
+ * 优先级是按"这句话有多可能让人做错判断"排的：汇率是内置参考值时，
+ * 那个数字本身就不该被当真，这件事比"几台快到期"更需要先说；
+ * 到期提醒次之；都没有时才退回一句中性的口径说明。
+ */
+function costHint(
+  totals: { expiring: number; expired: number; mixedCurrency: boolean },
+  settings: ReturnType<typeof useSettings>,
+): string | undefined {
+  if (settings.ratesMeta.usingFallback && totals.mixedCurrency) return '汇率为内置参考值，仅供估算';
+  if (settings.ratesMeta.stale && totals.mixedCurrency) return '汇率已超过一天未更新';
+  // 已过期排在即将到期前面：它更急，而且默认不计入上面那个金额，
+  // 不说明的话会显得"机器多了成本却没涨"
+  if (totals.expired > 0) {
+    return settings.costIncludeExpired
+      ? `${totals.expired} 台已过期`
+      : `${totals.expired} 台已过期，未计入`;
+  }
+  if (totals.expiring > 0) return `${totals.expiring} 台 ${settings.expiryWarnDays} 天内到期`;
+  if (totals.mixedCurrency) return '多币种已按汇率折算';
+  return undefined;
+}
+
+/** 悬停时给出换算前的原始金额，一行一个币种。 */
+function costTooltip(
+  byCurrency: Map<string, number>,
+  settings: ReturnType<typeof useSettings>,
+): string {
+  const lines = [...byCurrency.entries()].map(([code, amount]) => {
+    const meta = CURRENCY_META[normalizeCurrency(code)];
+    return `${meta.label} ${meta.symbol}${amount.toFixed(meta.decimals)} / 月`;
+  });
+  if (settings.ratesMeta.usingFallback) {
+    lines.push('汇率未能联网获取，用的是内置参考值');
+  } else if (settings.ratesMeta.fetchedAt > 0) {
+    lines.push(`汇率更新于 ${ago(settings.ratesMeta.fetchedAt)}`);
+  }
+  return lines.join('\n');
 }
 
 /**

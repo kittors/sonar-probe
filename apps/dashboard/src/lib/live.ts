@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { applyPushedSettings } from './settings';
 import type { BlockRule, EventLog, NodeState, ServerMessage } from './types';
 
 export type ConnState = 'connecting' | 'live' | 'reconnecting' | 'down';
@@ -146,6 +147,16 @@ class LiveStore {
           break;
         case 'block':
           this.onBlock?.(msg.rule);
+          break;
+        case 'settings':
+          /*
+           * 展示口径变了。
+           *
+           * 交给 settings store 处理而不是存在这里：它要在通知组件之前
+           * 先把新口径推给 format.ts，否则这一帧渲染出来的还是旧单位的数字。
+           * settings store 自己会通知它的订阅者，这里不用再 emit。
+           */
+          applyPushedSettings(msg.settings);
           break;
       }
       this.emit();

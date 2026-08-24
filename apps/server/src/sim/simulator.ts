@@ -1,4 +1,5 @@
 import { db, isFreshDatabase } from '../db.js';
+import { dayKeyIn, getSettings } from '../settings.js';
 import { Rng, clamp, ouStep } from './rng.js';
 import {
   ROLE_PROFILES,
@@ -93,8 +94,9 @@ interface RuntimeState {
 
 const states = new Map<string, RuntimeState>();
 
+// 和采集端上报走同一个时区，否则模拟数据和真实数据会落在不同的"天"里
 function dayKey(ts: number): string {
-  return new Date(ts).toISOString().slice(0, 10);
+  return dayKeyIn(getSettings().timezone, ts);
 }
 
 function buildRuntime(seed: NodeSeed, now: number): RuntimeState {

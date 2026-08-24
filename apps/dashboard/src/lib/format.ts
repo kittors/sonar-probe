@@ -1,25 +1,66 @@
 /** 展示层的格式化。所有数字进 UI 之前都过这里，保证全站单位口径一致。 */
 
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] as const;
+import { CURRENCY_META, normalizeCurrency } from './currency';
+
+const DECIMAL_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'] as const;
+const BINARY_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'] as const;
+
+/**
+ * 展示口径。
+ *
+ * 做成模块级可变状态，而不是把每个格式化函数都改成 hook：bytes() 在
+ * 几十个地方被调用，其中不少在纯函数和 map 回调里，全改成 hook 会把
+ * "格式化一个数字"这件事变成组件树的关注点。
+ *
+ * 由 SettingsProvider 在拿到设置后调一次 applyDisplaySettings 注入，
+ * 之后同一次渲染里的所有调用都用同一套口径。
+ */
+let display = {
+  byteBase: 1024 as 1024 | 1000,
+  binaryUnitLabels: false,
+  timezone: 'UTC',
+  expiryWarnDays: 7,
+  quotaWarnPercent: 80,
+};
+
+export function applyDisplaySettings(patch: Partial<typeof display>): void {
+  display = { ...display, ...patch };
+}
+
+export function displaySettings(): Readonly<typeof display> {
+  return display;
+}
 
 /**
  * 字节格式化。
  *
- * 按 1024 进制（磁盘/内存/流量在运维语境里都这么算）。
+ * 进制来自面板设置，因为这件事没有唯一正确答案：
+ *   1024 是 Linux 工具链的口径（df、free、ip -s link 都这么算）；
+ *   1000 是服务商账单的口径 —— 标称"2TB 流量"几乎都指 2×10¹² 字节。
+ * 两者差 10%，落到 2TB 上就是 180 GB 的误判空间，足以让人以为自己
+ * 快超额了而去关掉一个正常的服务。
+ *
  * 有效数字随量级递减：1.2 GB 比 1.23 GB 好读，984 MB 不需要小数。
  */
 export function bytes(n: number | null | undefined, digits?: number): string {
   if (n == null || !Number.isFinite(n)) return '—';
   if (n === 0) return '0 B';
+  const units = display.byteBase === 1024 && display.binaryUnitLabels ? BINARY_UNITS : DECIMAL_UNITS;
   const neg = n < 0;
   let v = Math.abs(n);
   let i = 0;
-  while (v >= 1024 && i < UNITS.length - 1) {
-    v /= 1024;
+  while (v >= display.byteBase && i < units.length - 1) {
+    v /= display.byteBase;
     i++;
   }
   const d = digits ?? (v >= 100 ? 0 : v >= 10 ? 1 : 2);
-  return `${neg ? '-' : ''}${v.toFixed(d)} ${UNITS[i]}`;
+  return `${neg ? '-' : ''}${v.toFixed(d)} ${units[i]}`;
+}
+
+/** 把人填的"数值 + 单位"折回字节。设置页和编辑弹窗输入配额时用。 */
+export function toBytes(value: number, unit: 'GB' | 'TB'): number {
+  const base = display.byteBase;
+  return value * (unit === 'TB' ? base ** 4 : base ** 3);
 }
 
 /** 速率，byte/s → 人类可读。 */
@@ -86,7 +127,30 @@ export function untilExpire(ts: number): { text: string; days: number; urgent: b
   if (days < 0) return { text: `已过期 ${-days} 天`, days, urgent: true, known: true };
   if (days === 0) return { text: '今天到期', days, urgent: true, known: true };
   if (days > 900) return { text: '长期有效', days, urgent: false, known: true };
-  return { text: `${days} 天后到期`, days, urgent: days <= 7, known: true };
+  // 标红的门槛跟设置里的到期提醒天数走。写死 7 天的话，一个把提醒设成
+  // 30 天的人会看到汇总说"3 台即将到期"，卡片上却一个红标都没有
+  return { text: `${days} 天后到期`, days, urgent: days <= display.expiryWarnDays, known: true };
+}
+
+/**
+ * 配额用量该显示成什么颜色。
+ *
+ * 黄线就是设置里的"配额提醒"百分比 —— 概览页说某台机器"接近配额"时，
+ * 那台机器的卡片上必须同时变黄，否则两处在讲同一件事却对不上。
+ * 红线固定在 100%：那不是提醒，是已经超了。
+ *
+ * normal 是没到警戒线时的颜色。进度条要用品牌色，而表格里那一列是文字，
+ * 整列涂成蓝色只会吵 —— 同一套阈值，两种载体本就该有不同的静默态。
+ */
+export function quotaTone(percent: number, normal = 'var(--color-brand)'): string {
+  if (percent >= 100) return 'var(--color-danger)';
+  if (percent >= display.quotaWarnPercent) return 'var(--color-warn)';
+  return normal;
+}
+
+/** 是否该提醒"接近配额"。和 quotaTone 的黄线共用同一个阈值。 */
+export function isNearQuota(percent: number): boolean {
+  return percent >= display.quotaWarnPercent;
 }
 
 export function clockTime(ts: number): string {
@@ -102,12 +166,26 @@ export function dayLabel(day: string): string {
   return `${Number(m)}/${Number(d)}`;
 }
 
+/**
+ * 金额格式化。
+ *
+ * 符号和小数位都查 CURRENCY_META。原先这里只认 USD/EUR/CNY 三种，
+ * 而机器可选的币种有十几个 —— 一台港币计价的机器会渲染成光秃秃的
+ * "48.00"，看不出是什么钱；日元则会得到 "1200.00" 这种当地人不会写的形式。
+ */
 export function money(amount: number, currency: string): string {
   // 0 在这里是"没填"而不是"不要钱"。真免费的机器也该显式标注，
   // 而不是靠一个恰好为 0 的字段推断出来。
   if (!amount || amount <= 0) return '未设置';
-  const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : currency === 'CNY' ? '¥' : '';
-  return `${symbol}${amount.toFixed(2)}`;
+  const meta = CURRENCY_META[normalizeCurrency(currency)];
+  return `${meta.symbol}${amount.toFixed(meta.decimals)}`;
+}
+
+/** 同上，但 0 显示成 0 而不是"未设置" —— 汇总数字里 0 是个真实的答案。 */
+export function moneyTotal(amount: number, currency: string): string {
+  const meta = CURRENCY_META[normalizeCurrency(currency)];
+  const safe = Number.isFinite(amount) ? amount : 0;
+  return `${meta.symbol}${safe.toFixed(meta.decimals)}`;
 }
 
 /** 大数字加千分位。 */

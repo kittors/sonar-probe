@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { api, type AdminUser, type LedgerRow, type TrafficRule } from '../lib/api';
+import { AdminSettings } from './AdminSettings';
 import { useAsync, useLive } from '../lib/live';
 import { useAuth } from '../lib/auth';
 import { ASSIGNABLE_ROLES, ROLE_LABEL, type Capability, type Role } from '../lib/permissions';
-import { ago, bytes, clockTime, count, percent } from '../lib/format';
+import { ago, bytes, clockTime, count, isNearQuota, percent, quotaTone } from '../lib/format';
 import { CountryBadge } from '../components/CountryBadge';
 import { Tooltip } from '../components/Tooltip';
 import { Chip, EmptyState, Field, RawCheckbox, SectionCard, Segmented, Select, Skeleton, Stat } from '../components/ui';
@@ -20,13 +21,13 @@ import {
   IconX,
 } from '../components/icons';
 
-type Tab = 'users' | 'online' | 'audit' | 'traffic';
+type Tab = 'users' | 'online' | 'audit' | 'traffic' | 'settings';
 
 export function Admin() {
   const { can, me } = useAuth();
   const [tab, setTab] = useState<Tab>('users');
 
-  if (!can('user:view') && !can('audit:view') && !can('alert:view')) {
+  if (!can('user:view') && !can('audit:view') && !can('alert:view') && !can('settings:view')) {
     return (
       <div className="ds-surface">
         <EmptyState
@@ -43,6 +44,8 @@ export function Admin() {
     { value: 'online', label: '在线与访客', show: can('audit:view') },
     { value: 'audit', label: '审计日志', show: can('audit:view') },
     { value: 'traffic', label: '流量阈值', show: can('alert:view') },
+    // 放在最后：它管的是全站口径，改的频率远低于前面几项日常要看的东西
+    { value: 'settings', label: '通用设置', show: can('settings:view') },
   ];
   const visible = tabs.filter((t) => t.show);
   const active = visible.some((t) => t.value === tab) ? tab : (visible[0]?.value ?? 'users');
@@ -79,6 +82,7 @@ export function Admin() {
       {active === 'online' && <OnlineTab />}
       {active === 'audit' && <AuditTab />}
       {active === 'traffic' && <TrafficTab />}
+      {active === 'settings' && <AdminSettings />}
     </>
   );
 }
@@ -1035,11 +1039,14 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
       >
         <Stat label="本月合计" value={bytes(totalMonth)} />
         <Stat label="今日合计" value={bytes(rows.reduce((a, r) => a + r.todayUsed, 0))} />
+        {/* 门槛跟设置里的「配额提醒」走，和概览页、卡片进度条共用同一个数 */}
         <Stat
           label="接近配额"
-          value={String(rows.filter((r) => (r.quotaPercent ?? 0) >= 80).length)}
+          value={String(rows.filter((r) => isNearQuota(r.quotaPercent ?? 0)).length)}
           unit="台"
-          color={rows.some((r) => (r.quotaPercent ?? 0) >= 80) ? 'var(--color-warn)' : undefined}
+          color={
+            rows.some((r) => isNearQuota(r.quotaPercent ?? 0)) ? 'var(--color-warn)' : undefined
+          }
         />
       </div>
 
@@ -1067,14 +1074,11 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
           <tbody>
             {rows.map((r) => {
               const pct = r.quotaPercent;
+              // 不限量的机器不该被涂成"安全"的颜色 —— 它压根没有配额可比
               const tone =
                 pct == null
                   ? 'var(--ds-text-description)'
-                  : pct >= 90
-                    ? 'var(--color-danger)'
-                    : pct >= 80
-                      ? 'var(--color-warn)'
-                      : 'var(--ds-text-secondary)';
+                  : quotaTone(pct, 'var(--ds-text-secondary)');
               return (
                 <tr key={r.nodeId} style={{ borderBottom: '1px solid var(--ds-border)' }}>
                   <td className="ds-text-body-sm" style={{ padding: '9px 12px' }}>

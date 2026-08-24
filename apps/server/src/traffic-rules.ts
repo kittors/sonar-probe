@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db } from './db.js';
+import { dayKeyIn, getSettings, monthKeyIn, trafficTotal } from './settings.js';
 import { listNodeStates } from './store.js';
 
 /**
@@ -106,14 +107,20 @@ export function deleteTrafficRule(id: string): boolean {
 // ————————————————————————————————————————————————————————
 
 function dayKey(ts = Date.now()): string {
-  return new Date(ts).toISOString().slice(0, 10);
+  return dayKeyIn(getSettings().timezone, ts);
 }
 
 function monthPrefix(ts = Date.now()): string {
-  return new Date(ts).toISOString().slice(0, 7);
+  return monthKeyIn(getSettings().timezone, ts);
 }
 
-/** 某台机器在指定周期内的用量。 */
+/**
+ * 某台机器在指定周期内的用量。
+ *
+ * total 按面板设置的计费方向合并 —— 阈值判定必须和配额用同一个口径，
+ * 否则"用到配额 80% 就提醒"里的 80% 指的是另一件事。
+ * rx / tx 仍然分别返回，账本要拿它们分列展示。
+ */
 export function usageOf(nodeId: string, scope: RuleScope): { rx: number; tx: number; total: number } {
   const row =
     scope === 'day'
@@ -128,7 +135,7 @@ export function usageOf(nodeId: string, scope: RuleScope): { rx: number; tx: num
 
   const rx = row?.rx ?? 0;
   const tx = row?.tx ?? 0;
-  return { rx, tx, total: rx + tx };
+  return { rx, tx, total: trafficTotal(rx, tx, getSettings().trafficDirection) };
 }
 
 export interface RuleBreach {
@@ -204,8 +211,9 @@ export function markFired(ruleId: string): void {
  * 管理页的"详细记录流量消耗"用的就是它。
  */
 export function trafficLedger(days = 30) {
+  const { timezone, trafficDirection } = getSettings();
   const nodes = listNodeStates();
-  const since = new Date(Date.now() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+  const since = dayKeyIn(timezone, Date.now() - (days - 1) * 86_400_000);
 
   const rows = db
     .prepare(
@@ -224,6 +232,9 @@ export function trafficLedger(days = 30) {
     const series = byNode.get(n.id) ?? [];
     const periodRx = series.reduce((a, d) => a + d.rx, 0);
     const periodTx = series.reduce((a, d) => a + d.tx, 0);
+    // 合计、日均、峰值日全部按计费方向算，跟上面的 monthUsed 保持同一口径。
+    // 一张表里"本月"按出站算而"30 天合计"按双向算，读表的人无从察觉
+    const periodTotal = trafficTotal(periodRx, periodTx, trafficDirection);
     const month = usageOf(n.id, 'month');
     const today = usageOf(n.id, 'day');
 
@@ -239,11 +250,14 @@ export function trafficLedger(days = 30) {
       todayUsed: today.total,
       periodRx,
       periodTx,
-      periodTotal: periodRx + periodTx,
+      periodTotal,
       quotaPercent: n.trafficQuota > 0 ? (month.total / n.trafficQuota) * 100 : null,
-      dailyAvg: series.length > 0 ? (periodRx + periodTx) / series.length : 0,
+      dailyAvg: series.length > 0 ? periodTotal / series.length : 0,
       peakDay: series.reduce(
-        (best, d) => (d.rx + d.tx > best.total ? { day: d.day, total: d.rx + d.tx } : best),
+        (best, d) => {
+          const total = trafficTotal(d.rx, d.tx, trafficDirection);
+          return total > best.total ? { day: d.day, total } : best;
+        },
         { day: '', total: 0 },
       ),
       series,

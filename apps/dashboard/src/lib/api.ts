@@ -9,6 +9,8 @@ import type {
   ServiceTraffic,
 } from './types';
 import type { Capability, Role } from './permissions';
+import type { Currency } from './currency';
+import type { PublicSettings } from './settings';
 import type { Me } from './auth';
 
 export interface FleetSummary {
@@ -22,7 +24,15 @@ export interface FleetSummary {
   monthRx: number;
   monthTx: number;
   activeBlocks: number;
+  /** 已折算成 costCurrency 的月度支出 */
   monthlyCost: number;
+  costCurrency: Currency;
+  /** 换算前各币种各是多少 */
+  costByCurrency: Array<{ currency: Currency; amount: number; nodes: number }>;
+  pricedNodes: number;
+  ratesUsingFallback: boolean;
+  ratesStale: boolean;
+  ratesFetchedAt: number;
   expiringSoon: number;
 }
 
@@ -185,7 +195,84 @@ export const api = {
     if (opts.action) p.set('action', opts.action);
     return req<AuditRow[]>(`/api/admin/audit?${p}`);
   },
+
+  // —— 通用设置
+
+  /** 展示口径，匿名可读。日常渲染走 lib/settings 的单例，这条给设置页做对照 */
+  publicSettings: () => req<PublicSettings>('/api/settings/public'),
+
+  settings: () => req<SettingsBundle>('/api/settings'),
+
+  updateSettings: (body: Partial<PanelSettings>) =>
+    req<{ settings: PanelSettings; rates: RatesPayload }>('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  refreshRates: () => req<RatesPayload>('/api/settings/rates/refresh', { method: 'POST' }),
 };
+
+// ————————————————————————————————————————————————————————
+// 设置相关类型
+//
+// 服务端的 Settings 接口（apps/server/src/settings.ts）在这里有一份镜像，
+// 改动时两边都要动 —— 和 types.ts、permissions.ts 是同一个约定。
+// ————————————————————————————————————————————————————————
+
+export interface PanelSettings {
+  panelName: string;
+  panelTagline: string;
+
+  displayCurrency: Currency;
+  autoRefreshRates: boolean;
+  /** 手填汇率，含义是"1 USD = N 该币种"。只存显式填过的项 */
+  rateOverrides: Partial<Record<Currency, number>>;
+  costIncludeExpired: boolean;
+
+  byteBase: 1024 | 1000;
+  binaryUnitLabels: boolean;
+  trafficDirection: 'both' | 'tx' | 'rx';
+
+  timezone: string;
+
+  offlineAfterSeconds: number;
+  cpuWarnPercent: number;
+  memWarnPercent: number;
+  diskWarnPercent: number;
+  loadWarnRatio: number;
+
+  expiryWarnDays: number;
+  quotaWarnPercent: number;
+
+  metricRetentionHours: number;
+  auditRetentionDays: number;
+}
+
+export interface RatesPayload {
+  base: 'USD';
+  displayCurrency: Currency;
+  /** 生效汇率：手填 > 自动拉取 > 内置参考值 */
+  rates: Record<Currency, number>;
+  /** 哪些币种用的是手填值 */
+  overridden: Currency[];
+  fetchedAt: number;
+  source: string;
+  lastError: string;
+  usingFallback: boolean;
+  stale: boolean;
+  autoRefresh: boolean;
+}
+
+export interface SettingsBundle {
+  settings: PanelSettings;
+  /** 服务端的默认值，用来在界面上标出"这项被改过" */
+  defaults: PanelSettings;
+  rates: RatesPayload;
+  options: {
+    currencies: Array<{ value: Currency; symbol: string; label: string; decimals: number }>;
+    timezones: Array<{ value: string; label: string }>;
+  };
+}
 
 // ————————————————————————————————————————————————————————
 // 管理相关类型

@@ -199,6 +199,19 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC);
+
+/*
+ * 面板设置与汇率快照。
+ *
+ * value 存 JSON 而不是一列一个设置项：加设置项比读设置项频繁得多，
+ * 每加一个字段就 ALTER 一次表不划算。目前只有两行 —— 'panel' 是设置，
+ * 'rates' 是拉回来的汇率缓存。
+ */
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
 `);
 
 /**
@@ -299,10 +312,30 @@ export function purgeSimulatedData(): { nodes: number; rows: number } {
   return { nodes: simIds.length, rows };
 }
 
-/** 只保留最近 N 小时的高频采样，避免库无限膨胀。 */
+/**
+ * 只保留最近 N 小时的高频采样，避免库无限膨胀。
+ *
+ * 保留时长由面板设置决定（settings.metricRetentionHours），调用方负责传进来 ——
+ * 这个模块被 settings.ts 依赖，反过来 import 它会成环。
+ */
 export function pruneMetrics(retainHours = 26): void {
   const cutoff = Date.now() - retainHours * 3600_000;
   db.prepare('DELETE FROM metrics WHERE ts < ?').run(cutoff);
+}
+
+/**
+ * 清理过期的审计日志。
+ *
+ * 这张表原先只写不清 —— 每次浏览都落一行，一台常看的面板一年能攒下几十万条，
+ * 而没有人会去翻半年前谁点开过哪台机器。
+ *
+ * retainDays 传 0 表示永久保留：合规场景下确实有人需要，那时由他自己去管磁盘。
+ */
+export function pruneAuditLog(retainDays: number): number {
+  if (!Number.isFinite(retainDays) || retainDays <= 0) return 0;
+  const cutoff = Date.now() - retainDays * 86_400_000;
+  const res = db.prepare('DELETE FROM access_log WHERE ts < ?').run(cutoff);
+  return Number(res.changes ?? 0);
 }
 
 export function isFreshDatabase(): boolean {

@@ -5,7 +5,7 @@ import type { NodeState } from '../lib/types';
 import { Sparkline } from './charts/Sparkline';
 import { Chip, Meter, STATUS_COLOR, STATUS_TEXT, StatusDot } from './ui';
 import { IconDown, IconUp, IconWifiOff } from './icons';
-import { ago, bytes, maskIp, rate, ratio, untilExpire, uptime } from '../lib/format';
+import { ago, bytes, maskIp, quotaTone, rate, ratio, untilExpire, uptime } from '../lib/format';
 import { CountryBadge } from './CountryBadge';
 import { Tooltip } from './Tooltip';
 
@@ -258,12 +258,9 @@ export function NodeCard({ node, index = 0 }: { node: NodeState; index?: number 
                   height: '100%',
                   width: `${Math.min(100, quotaPct)}%`,
                   borderRadius: 999,
-                  background:
-                    quotaPct >= 90
-                      ? 'var(--color-danger)'
-                      : quotaPct >= 75
-                        ? 'var(--color-warn)'
-                        : 'var(--color-brand)',
+                  // 黄线跟设置里的"配额提醒"走：概览页说这台机器接近配额时，
+                  // 它的进度条必须同时变黄，否则两处在讲同一件事却对不上
+                  background: quotaTone(quotaPct),
                   transition: 'width 0.6s cubic-bezier(0.4,0,0.2,1)',
                 }}
               />

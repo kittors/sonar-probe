@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { db } from './db.js';
+import { dayKeyIn, getSettings } from './settings.js';
 import { logEvent } from './store.js';
 import type { Metric } from './types.js';
 
@@ -64,8 +65,19 @@ export interface AgentReport {
   peers?: AgentPeerTraffic[];
 }
 
+/**
+ * 这条上报归到哪一天。
+ *
+ * 必须和读取端（billing.ts 的周期判定、traffic-rules 的日/月用量）用同一个
+ * 时区，否则每天会有几个小时的流量落在读取端认为的"另一天"里。
+ * 两边都取自面板设置。
+ *
+ * 改时区不会重算历史：已经写进 daily_traffic 的行仍按旧时区归属。
+ * 换时区当天的那一格会有几个小时的偏差，之后恢复正常 —— 这是设置页里
+ * 写明的取舍，重算历史需要逐条采样的原始时间戳，而那些早被 pruneMetrics 清掉了。
+ */
 function nowDay(ts = Date.now()): string {
-  return new Date(ts).toISOString().slice(0, 10);
+  return dayKeyIn(getSettings().timezone, ts);
 }
 
 /** 回环和私有地址不能当作机器的对外地址。 */

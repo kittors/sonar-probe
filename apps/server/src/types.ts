@@ -181,9 +181,32 @@ export interface EventLog {
   ts: number;
 }
 
+/**
+ * 展示口径。跟着 WebSocket 推给所有在线的人，包括匿名访客。
+ *
+ * 必须推而不是让各人自己去拉：口径是全局的，管理员把流量进制从 1024 改成 1000
+ * 之后，另一个正开着页面的人如果还按旧口径渲染，两个人对着同一台机器会读出
+ * 差 10% 的数字，而谁都不知道对方看到的是什么。
+ */
+export interface PublicSettings {
+  panelName: string;
+  panelTagline: string;
+  displayCurrency: string;
+  costIncludeExpired: boolean;
+  byteBase: 1024 | 1000;
+  binaryUnitLabels: boolean;
+  trafficDirection: 'both' | 'tx' | 'rx';
+  timezone: string;
+  expiryWarnDays: number;
+  quotaWarnPercent: number;
+  rates: Record<string, number>;
+  ratesMeta: { fetchedAt: number; source: string; usingFallback: boolean; stale: boolean };
+}
+
 /** WebSocket 下行消息。 */
 export type ServerMessage =
   | { type: 'snapshot'; nodes: NodeState[]; ts: number }
   | { type: 'tick'; nodes: NodeState[]; ts: number }
   | { type: 'event'; event: EventLog }
-  | { type: 'block'; rule: BlockRule };
+  | { type: 'block'; rule: BlockRule }
+  | { type: 'settings'; settings: PublicSettings };

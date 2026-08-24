@@ -1,5 +1,16 @@
 import { db } from './db.js';
 import { cycleRange } from './billing.js';
+import { convert, effectiveRates } from './rates.js';
+import {
+  CURRENCIES as SUPPORTED_CURRENCIES,
+  dayKeyIn,
+  getSettings,
+  monthKeyIn,
+  normalizeCurrency,
+  trafficSumSql,
+  trafficTotal,
+  type Currency,
+} from './settings.js';
 import type {
   DailyTraffic,
   EventLog,
@@ -11,8 +22,6 @@ import type {
   ServiceTraffic,
 } from './types.js';
 
-/** 超过这个时长没上报就算离线。 */
-const OFFLINE_AFTER_MS = 30_000;
 /** 卡片上迷你曲线的点数。 */
 const TREND_POINTS = 40;
 
@@ -83,6 +92,10 @@ export function listNodeStates(): NodeState[] {
     `SELECT cpu, net_rx, net_tx FROM metrics WHERE node_id=? ORDER BY ts DESC LIMIT ${TREND_POINTS}`,
   );
 
+  // 整批机器共用一次设置读取 —— 这个函数每个 tick 都跑，
+  // 每台机器都去问一遍设置纯属浪费（getSettings 有缓存，但循环里调仍是白开销）
+  const settings = getSettings();
+
   return rows.map((row) => {
     const info = rowToNodeInfo(row);
     const lastSeen = row.last_seen as number;
@@ -92,7 +105,7 @@ export function listNodeStates(): NodeState[] {
       .slice()
       .reverse();
 
-    const cycle = cycleRange(info.billingDay);
+    const cycle = cycleRange(info.billingDay, new Date(), settings.timezone);
     const measured = measuredCycleTraffic(info.id);
     const offset =
       (row.traffic_offset_cycle as string) === cycle.start ? (row.traffic_offset as number) : 0;
@@ -113,11 +126,25 @@ export function listNodeStates(): NodeState[] {
   });
 }
 
+/**
+ * 在线判定。
+ *
+ * 全部四条告警线和离线时长都来自面板设置。写死的问题不是"改不了"，
+ * 而是没有一组阈值对所有机器都合适 —— 一台跑 CI 的构建机负载常年在
+ * 核心数的三四倍，那是它的正常状态，按 2.5 倍判定会让它永远挂着告警，
+ * 于是所有人都学会了无视这个颜色。
+ */
 function statusOf(lastSeen: number, metric: Metric | null, node: NodeInfo): NodeStatus {
-  if (Date.now() - lastSeen > OFFLINE_AFTER_MS || !metric) return 'offline';
-  const memPct = node.memTotal > 0 ? metric.memUsed / node.memTotal : 0;
-  const diskPct = node.diskTotal > 0 ? metric.diskUsed / node.diskTotal : 0;
-  if (metric.cpu > 92 || memPct > 0.92 || diskPct > 0.9 || metric.load1 > node.cpuCores * 2.5) {
+  const s = getSettings();
+  if (Date.now() - lastSeen > s.offlineAfterSeconds * 1000 || !metric) return 'offline';
+  const memPct = node.memTotal > 0 ? (metric.memUsed / node.memTotal) * 100 : 0;
+  const diskPct = node.diskTotal > 0 ? (metric.diskUsed / node.diskTotal) * 100 : 0;
+  if (
+    metric.cpu > s.cpuWarnPercent ||
+    memPct > s.memWarnPercent ||
+    diskPct > s.diskWarnPercent ||
+    metric.load1 > node.cpuCores * s.loadWarnRatio
+  ) {
     return 'warning';
   }
   return 'online';
@@ -141,32 +168,35 @@ export function currentCycleTraffic(nodeId: string): number {
     | undefined;
   if (!node) return 0;
 
-  const { start, end } = cycleRange(node.billing_day);
-  const row = db
-    .prepare(
-      'SELECT COALESCE(SUM(rx),0) AS rx, COALESCE(SUM(tx),0) AS tx FROM daily_traffic WHERE node_id=? AND day >= ? AND day < ?',
-    )
-    .get(nodeId, start, end) as { rx: number; tx: number };
-
-  const measured = row.rx + row.tx;
+  const settings = getSettings();
+  const { start } = cycleRange(node.billing_day, new Date(), settings.timezone);
+  const measured = measuredCycleTraffic(nodeId);
   const offset = node.traffic_offset_cycle === start ? node.traffic_offset : 0;
   // 校准值可能是负的（面板统计比账单高），但总量不该被压到 0 以下
   return Math.max(0, measured + offset);
 }
 
-/** 只要实测部分，不含校准 —— 编辑弹窗要拿它算差额。 */
+/**
+ * 只要实测部分，不含校准 —— 编辑弹窗要拿它算差额。
+ *
+ * 收发怎么合并由面板设置的计费方向决定。这不是显示偏好，是"这台机器的配额
+ * 到底在扣什么"：只计出站的机房里按 rx+tx 算，一台正常同步镜像的机器
+ * 会显示成随时要超额。
+ */
 export function measuredCycleTraffic(nodeId: string): number {
   const node = db.prepare('SELECT billing_day FROM nodes WHERE id=?').get(nodeId) as
     | { billing_day: number }
     | undefined;
   if (!node) return 0;
-  const { start, end } = cycleRange(node.billing_day);
+  const settings = getSettings();
+  const { start, end } = cycleRange(node.billing_day, new Date(), settings.timezone);
   const row = db
     .prepare(
-      'SELECT COALESCE(SUM(rx),0) AS rx, COALESCE(SUM(tx),0) AS tx FROM daily_traffic WHERE node_id=? AND day >= ? AND day < ?',
+      `SELECT ${trafficSumSql(settings.trafficDirection)} AS total
+       FROM daily_traffic WHERE node_id=? AND day >= ? AND day < ?`,
     )
-    .get(nodeId, start, end) as { rx: number; tx: number };
-  return row.rx + row.tx;
+    .get(nodeId, start, end) as { total: number };
+  return row.total;
 }
 
 /**
@@ -205,7 +235,7 @@ export function getDailyTraffic(nodeId: string, days = 30): DailyTraffic[] {
 }
 
 export function getServiceTraffic(nodeId: string, days = 7): ServiceTraffic[] {
-  const since = new Date(Date.now() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+  const since = dayKeyIn(getSettings().timezone, Date.now() - (days - 1) * 86_400_000);
   const rows = db
     .prepare(
       // 老版本 agent 把查不到归属的连接写成 'unknown'，新版本写 '已结束的连接'。
@@ -318,8 +348,10 @@ function sanitizeUrl(input: unknown): string {
   }
 }
 
-const CURRENCIES = new Set(['USD', 'EUR', 'CNY', 'JPY', 'HKD', 'GBP']);
 const CYCLES = new Set(['monthly', 'quarterly', 'yearly']);
+
+/** 机器可选的计价币种，跟设置页的展示币种共用一份清单。 */
+export const NODE_CURRENCIES = SUPPORTED_CURRENCIES;
 
 /**
  * 更新机器的账务属性。
@@ -350,10 +382,7 @@ export function updateNode(id: string, patch: NodePatch): NodeState | null {
     const p = Number(patch.price);
     put('price', Number.isFinite(p) && p >= 0 ? Math.round(p * 100) / 100 : 0);
   }
-  if (patch.currency !== undefined) {
-    const c = String(patch.currency).toUpperCase();
-    put('currency', CURRENCIES.has(c) ? c : 'USD');
-  }
+  if (patch.currency !== undefined) put('currency', normalizeCurrency(patch.currency));
   if (patch.billingCycle !== undefined) {
     put('billing_cycle', CYCLES.has(patch.billingCycle) ? patch.billingCycle : 'monthly');
   }
@@ -399,7 +428,8 @@ export function updateNode(id: string, patch: NodePatch): NodeState | null {
         const row = db.prepare('SELECT billing_day FROM nodes WHERE id=?').get(id) as {
           billing_day: number;
         };
-        const { start } = cycleRange(row.billing_day);
+        const { start } = cycleRange(row.billing_day, new Date(), getSettings().timezone);
+        // measuredCycleTraffic 已按计费方向合并过，差额自然也是同一口径
         const offset = Math.round(actual) - measuredCycleTraffic(id);
         db.prepare('UPDATE nodes SET traffic_offset=?, traffic_offset_cycle=? WHERE id=?').run(
           offset,
@@ -447,8 +477,26 @@ export function listEvents(limit = 60, nodeId?: string): EventLog[] {
   }));
 }
 
+/**
+ * 一台机器摊到每个月的成本，折算成指定币种。
+ *
+ * 两件事必须一起做，少一件结果就没有意义：
+ *   折算周期 —— 年付 1200 和月付 1200 完全不是一回事；
+ *   折算币种 —— 把 52 欧元当 52 美元加进去，得到的数字既不是欧元也不是美元。
+ */
+function monthlyCostOf(
+  node: Pick<NodeInfo, 'price' | 'currency' | 'billingCycle'>,
+  to: Currency,
+  rates: Record<Currency, number>,
+): number {
+  if (!(node.price > 0)) return 0;
+  const divisor = node.billingCycle === 'yearly' ? 12 : node.billingCycle === 'quarterly' ? 3 : 1;
+  return convert(node.price / divisor, normalizeCurrency(node.currency), to, rates);
+}
+
 /** 概览页顶部的汇总数字。 */
 export function getFleetSummary() {
+  const settings = getSettings();
   const nodes = listNodeStates();
   const online = nodes.filter((n) => n.status === 'online').length;
   const warning = nodes.filter((n) => n.status === 'warning').length;
@@ -457,21 +505,53 @@ export function getFleetSummary() {
   const totalRx = nodes.reduce((a, n) => a + (n.metric?.netRx ?? 0), 0);
   const totalTx = nodes.reduce((a, n) => a + (n.metric?.netTx ?? 0), 0);
 
-  const monthPrefix = new Date().toISOString().slice(0, 7);
+  // 月份按面板时区取。跨月那几个小时里 UTC 和本地不在同一个月，
+  // 用 UTC 会让月初的汇总数字凭空少掉大半天的流量
+  const month = monthKeyIn(settings.timezone);
   const traffic = db
     .prepare(
-      "SELECT COALESCE(SUM(rx),0) AS rx, COALESCE(SUM(tx),0) AS tx FROM daily_traffic WHERE day LIKE ?",
+      `SELECT COALESCE(SUM(rx),0) AS rx, COALESCE(SUM(tx),0) AS tx
+       FROM daily_traffic WHERE day LIKE ?`,
     )
-    .get(`${monthPrefix}%`) as { rx: number; tx: number };
+    .get(`${month}%`) as { rx: number; tx: number };
 
   const activeBlocks = (
     db.prepare("SELECT COUNT(*) AS n FROM block_rules WHERE state='active'").get() as { n: number }
   ).n;
 
-  const monthlyCost = nodes.reduce((sum, n) => {
-    const divisor = n.billingCycle === 'yearly' ? 12 : n.billingCycle === 'quarterly' ? 3 : 1;
-    return sum + n.price / divisor;
-  }, 0);
+  /*
+   * 月度成本。
+   *
+   * 原来这里是 `sum + n.price / divisor` —— 不看币种，把各国货币的面值
+   * 直接相加，再统一标一个美元符号。三台机器分别 12.9 美元、52 欧元、
+   * 180 人民币时，它会得出 "$244.90"，而真实支出约合 90 美元。
+   * 那个数字不是估算不准，是根本没有单位。
+   */
+  const displayCurrency = normalizeCurrency(settings.displayCurrency);
+  const { rates, usingFallback, stale, fetchedAt } = effectiveRates();
+  const now = Date.now();
+
+  // 已过期的机器默认不计：到期就不再扣费了，继续算进月度支出会让人
+  // 以为自己每月还在为一台早就停掉的机器付钱
+  const billable = settings.costIncludeExpired
+    ? nodes
+    : nodes.filter((n) => n.expireAt <= 0 || n.expireAt > now);
+
+  const monthlyCost = billable.reduce(
+    (sum, n) => sum + monthlyCostOf(n, displayCurrency, rates),
+    0,
+  );
+
+  // 按币种拆一份明细。汇总数字换算过，人总会想知道换算前各是多少
+  const costByCurrency: Array<{ currency: Currency; amount: number; nodes: number }> = [];
+  for (const code of SUPPORTED_CURRENCIES) {
+    const group = billable.filter((n) => n.price > 0 && normalizeCurrency(n.currency) === code);
+    if (group.length === 0) continue;
+    const amount = group.reduce((sum, n) => sum + monthlyCostOf(n, code, rates), 0);
+    costByCurrency.push({ currency: code, amount: Number(amount.toFixed(2)), nodes: group.length });
+  }
+
+  const expiryWindowMs = settings.expiryWarnDays * 86_400_000;
 
   return {
     total: nodes.length,
@@ -480,14 +560,28 @@ export function getFleetSummary() {
     offline,
     netRx: totalRx,
     netTx: totalTx,
-    monthTraffic: traffic.rx + traffic.tx,
+    monthTraffic: trafficTotal(traffic.rx, traffic.tx, settings.trafficDirection),
     monthRx: traffic.rx,
     monthTx: traffic.tx,
     activeBlocks,
     monthlyCost: Number(monthlyCost.toFixed(2)),
-    /** 30 天内到期的机器，用于续费提醒 */
-    expiringSoon: nodes.filter(
-      (n) => n.expireAt > 0 && n.expireAt - Date.now() < 30 * 86_400_000,
-    ).length,
+    /** 汇总用的币种，前端照它选符号，不要再自己假定 */
+    costCurrency: displayCurrency,
+    costByCurrency,
+    /** 有几台填了价格 —— 一台都没填时"月度成本 0"是句空话，前端据此决定显不显示 */
+    pricedNodes: billable.filter((n) => n.price > 0).length,
+    /** 汇率只是内置参考值或者已经过期，界面上要如实说明 */
+    ratesUsingFallback: usingFallback,
+    ratesStale: stale,
+    ratesFetchedAt: fetchedAt,
+    /*
+     * 按设置的提醒窗口算，不再前端 7 天、后端 30 天各说各话。
+     *
+     * 已过期的单独算一档。原来的判定是 `expireAt - now < 窗口`，负数天然满足，
+     * 于是一台过期 30 天的机器会被数进"7 天内到期"里 —— 那句话对它是错的，
+     * 而且它需要的动作也不同：即将到期是"该续费了"，已过期是"要么续要么删"。
+     */
+    expiringSoon: nodes.filter((n) => n.expireAt > now && n.expireAt - now < expiryWindowMs).length,
+    expired: nodes.filter((n) => n.expireAt > 0 && n.expireAt <= now).length,
   };
 }

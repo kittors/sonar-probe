@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import type { NodeState } from '../lib/types';
 import { bytes, safeUrl } from '../lib/format';
+import { CURRENCIES as ALL_CURRENCIES, CURRENCY_META } from '../lib/currency';
+import { useSettings } from '../lib/settings';
 import { Modal } from './Modal';
 import { Alert, Checkbox, DatePicker, Field, FieldRow, Segmented, Select } from './ui';
 
@@ -13,16 +15,23 @@ import { Alert, Checkbox, DatePicker, Field, FieldRow, Segmented, Select } from 
  * 面板和真机对不上。
  */
 
-const GB = 1024 ** 3;
-const TB = 1024 ** 4;
-
 const CYCLES = [
   { value: 'monthly' as const, label: '月付' },
   { value: 'quarterly' as const, label: '季付' },
   { value: 'yearly' as const, label: '年付' },
 ];
 
-const CURRENCIES = ['USD', 'CNY', 'EUR', 'HKD', 'JPY', 'GBP'].map((c) => ({ value: c, label: c }));
+/**
+ * 币种下拉。
+ *
+ * 带上中文名而不只是三字码：填这个框的人是在照着自己的账单选，
+ * 账单上写的是"港币"不是"HKD"，而 HKD/SGD/TWD 这几个码认错了很难被发现。
+ */
+const CURRENCY_OPTIONS = ALL_CURRENCIES.map((c) => ({
+  value: c,
+  label: `${CURRENCY_META[c].label} ${CURRENCY_META[c].symbol}`,
+  hint: c,
+}));
 
 /*
  * 流量额度的重置日。
@@ -51,6 +60,17 @@ interface Props {
 }
 
 export function NodeEditDialog({ node, onClose, onSaved }: Props) {
+  /*
+   * 配额输入的进制跟着面板设置走。
+   *
+   * 人填的"2 TB"是照着服务商页面抄下来的，那里的 TB 是 10¹² 还是 2⁴⁰
+   * 取决于服务商 —— 面板设置里选的正是这件事。用固定的 1024 去折算，
+   * 会让一台标称 2 TB 的机器在库里存成 2.2×10¹²，配额百分比一直偏低 10%。
+   */
+  const { byteBase } = useSettings();
+  const GB = byteBase ** 3;
+  const TB = byteBase ** 4;
+
   const [name, setName] = useState(node.name);
   const [provider, setProvider] = useState(node.provider);
   const [countryCode, setCountryCode] = useState(node.countryCode === 'XX' ? '' : node.countryCode);
@@ -259,7 +279,12 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
             />
           </Field>
           <Field label="币种" width={92}>
-            <Select value={currency} onChange={setCurrency} options={CURRENCIES} ariaLabel="币种" />
+            <Select
+              value={currency}
+              onChange={setCurrency}
+              options={CURRENCY_OPTIONS}
+              ariaLabel="币种"
+            />
           </Field>
           <Field label="计费周期" grow>
             <Segmented value={cycle} onChange={setCycle} options={CYCLES} />

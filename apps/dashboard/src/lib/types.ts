@@ -5,6 +5,8 @@
  * 服务端有一份镜像副本：apps/server/src/types.ts —— 改动时两边都要动。
  */
 
+import type { PublicSettings } from './settings';
+
 export type NodeStatus = 'online' | 'offline' | 'warning';
 
 /** 机器的静态画像，agent 注册时上报一次，之后很少变。 */
@@ -186,4 +188,6 @@ export type ServerMessage =
   | { type: 'snapshot'; nodes: NodeState[]; ts: number }
   | { type: 'tick'; nodes: NodeState[]; ts: number }
   | { type: 'event'; event: EventLog }
-  | { type: 'block'; rule: BlockRule };
+  | { type: 'block'; rule: BlockRule }
+  // 展示口径。管理员改设置时推给所有在线的人，让全站数字同时换口径
+  | { type: 'settings'; settings: PublicSettings };

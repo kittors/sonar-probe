@@ -2,8 +2,11 @@
  * 流量周期。
  *
  * 单独成文件是为了能脱离数据库测试 —— 这里的月末夹取和跨年回退全是边界，
- * 靠肉眼看代码是看不出对错的。
+ * 靠肉眼看代码是看不出对错的。时区工具也刻意做成无依赖的 tz.ts，
+ * 就是为了别把数据库拖进这份测试里。
  */
+
+import { civilDateIn } from './tz.js';
 
 /**
  * 流量周期的起止日（YYYY-MM-DD，左闭右开）。
@@ -11,10 +14,15 @@
  * billingDay 是每月的第几号，0 表示按自然月。很多 VPS 的额度从开通日算，
  * 不是每月 1 号 —— 按自然月统计的话，账单日附近的用量会算进错误的周期。
  *
- * 日期一律按 UTC 取。daily_traffic 的 day 字段就是 UTC 生成的，两边必须用
- * 同一个基准，否则边界那天会重复计入或整天漏掉。
+ * timezone 决定"今天是几号"。它必须和写 daily_traffic.day 时用的时区一致，
+ * 否则边界那天会重复计入或整天漏掉 —— 两边都取自同一份面板设置。
+ * 默认 UTC，保持面板早期的行为不变。
  */
-export function cycleRange(billingDay: number, now = new Date()): { start: string; end: string } {
+export function cycleRange(
+  billingDay: number,
+  now = new Date(),
+  timezone = 'UTC',
+): { start: string; end: string } {
   const day = billingDay >= 1 && billingDay <= 31 ? Math.floor(billingDay) : 1;
 
   /*
@@ -29,13 +37,21 @@ export function cycleRange(billingDay: number, now = new Date()): { start: strin
     return new Date(Date.UTC(y, m, Math.min(day, lastDay)));
   };
 
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
+  /*
+   * "今天"要按面板时区算，不能用 now 的 UTC 分量。
+   *
+   * 账单日设在 1 号、面板时区 UTC+8 时，北京时间 1 号早上 8 点之前
+   * UTC 还停在上个月最后一天 —— 用 UTC 判定就会把新周期头 8 小时的流量
+   * 记进上一个周期，正好是最容易被人拿去对账的那几个小时。
+   */
+  const civil = civilDateIn(timezone, now.getTime());
+  const y = civil.year;
+  const m = civil.month;
 
   // 还没走到本月的账单日，说明当前还在上一个周期里。
   // 传 m-1 给 Date.UTC 会自动回退到上一年的 12 月，跨年不用特殊处理。
   let start = anchor(y, m);
-  if (now.getUTCDate() < start.getUTCDate()) start = anchor(y, m - 1);
+  if (civil.day < start.getUTCDate()) start = anchor(y, m - 1);
 
   const end = anchor(start.getUTCFullYear(), start.getUTCMonth() + 1);
   return { start: iso(start), end: iso(end) };
@@ -46,8 +62,8 @@ export function iso(d: Date): string {
 }
 
 /** 周期进度，用于"还剩几天重置"。返回 0-1。 */
-export function cycleProgress(billingDay: number, now = new Date()): number {
-  const { start, end } = cycleRange(billingDay, now);
+export function cycleProgress(billingDay: number, now = new Date(), timezone = 'UTC'): number {
+  const { start, end } = cycleRange(billingDay, now, timezone);
   const s = Date.parse(`${start}T00:00:00Z`);
   const e = Date.parse(`${end}T00:00:00Z`);
   if (e <= s) return 0;
