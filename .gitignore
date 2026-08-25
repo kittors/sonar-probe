@@ -21,3 +21,6 @@ apps/dashboard/public/sonar-agent-linux-*
 
 # 构建信息
 *.tsbuildinfo
+
+# go build ./... 会在 agent/ 下留一个与目录同名的二进制
+agent/agent

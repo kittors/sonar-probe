@@ -1098,6 +1098,9 @@ body {
   .ds-alert[data-tone='info'] {
     --alert-tone: var(--color-brand);
   }
+  .ds-alert[data-tone='success'] {
+    --alert-tone: var(--color-ok);
+  }
 
   .ds-alert-icon {
     color: var(--alert-tone);

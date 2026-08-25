@@ -1,11 +1,19 @@
 /**
- * 权限模型
+ * 能力点
  *
  * 粒度是"按钮级"：每个会产生后果的操作都是一个独立的能力点，前端拿它决定按钮显不显示，
  * 后端拿它决定请求放不放行。**两边都要判** —— 前端隐藏按钮只是不碍眼，
  * 真正拦住越权的是后端那道。
  *
  * 这份定义前后端各有一份镜像（apps/server/src/permissions.ts），改动时两边都要动。
+ *
+ * ——————————————————————————————————————————————
+ *
+ * 这里**只有能力点，没有角色**。
+ *
+ * 角色和它的能力集在服务端的数据库里，运行期可增删改，前端通过
+ * /api/admin/capabilities 拿到当前有哪些角色。写死一份在这儿的话，
+ * 管理员新建的角色在界面上就会显示成一个光秃秃的 id。
  */
 
 export const CAPABILITIES = {
@@ -32,16 +40,28 @@ export const CAPABILITIES = {
   'alert:view': { label: '查看流量阈值', group: '告警', risk: 'low' },
   'alert:manage': { label: '增删改流量阈值', group: '告警', risk: 'medium' },
 
+  // —— SSH
+  'ssh:view': { label: '查看 SSH 接入方式与别名', group: 'SSH', risk: 'medium' },
+  'ssh:keys': { label: '管理自己的公钥', group: 'SSH', risk: 'low' },
+  'ssh:endpoint': { label: '编辑机器的 SSH 别名与连接方式', group: 'SSH', risk: 'medium' },
+  'ssh:audit': { label: '查看机器上的密钥实况与漂移', group: 'SSH', risk: 'high' },
+  'ssh:grant': { label: '发起 SSH 授权', group: 'SSH', risk: 'high' },
+  'ssh:approve': { label: '审批 SSH 授权申请', group: 'SSH', risk: 'high' },
+  'ssh:revoke': { label: '撤销 SSH 授权', group: 'SSH', risk: 'high' },
+  'ssh:remote_apply': { label: '经 agent 远程下发密钥变更', group: 'SSH', risk: 'high' },
+
   // —— 管理
   'audit:view': { label: '查看访问审计与在线用户', group: '管理', risk: 'medium' },
   'user:view': { label: '查看用户列表', group: '管理', risk: 'medium' },
   'user:manage': { label: '改用户角色与权限', group: '管理', risk: 'high' },
+  'user:create': { label: '创建与删除用户账号', group: '管理', risk: 'high' },
+  'user:escalate': {
+    label: '授予自己没有的权限（等同于可自我提权）',
+    group: '管理',
+    risk: 'high',
+  },
+  'role:manage': { label: '增删改角色及其能力集', group: '管理', risk: 'high' },
   'settings:view': { label: '查看通用设置', group: '管理', risk: 'low' },
-  /*
-   * 改设置算高危，理由不在"能改坏页面"，而在两件有实际后果的事：
-   * 改流量口径会让所有人的配额百分比一起变（可能把一台快超额的机器
-   * 显示成安全的），改保留天数会真的删掉指标和审计记录。
-   */
   'settings:manage': { label: '修改通用设置（口径、阈值、保留策略）', group: '管理', risk: 'high' },
 } as const;
 
@@ -49,89 +69,39 @@ export type Capability = keyof typeof CAPABILITIES;
 
 export const ALL_CAPABILITIES = Object.keys(CAPABILITIES) as Capability[];
 
-export type Role = 'admin' | 'operator' | 'viewer' | 'guest' | 'anonymous';
+/** 角色 id。具体有哪些角色由服务端决定，前端不做枚举。 */
+export type Role = string;
 
-export const ROLE_LABEL: Record<Role, string> = {
-  admin: '管理员',
-  operator: '运维',
-  viewer: '观察者',
-  guest: '访客',
-  anonymous: '未登录',
-};
+/** 系统内置角色，界面上要对它们做特殊处理（不可删、能力集只读）。 */
+export const SYSTEM_ROLES = ['admin', 'operator', 'viewer', 'guest', 'anonymous'] as const;
 
-/** 可以被指派给真实用户的角色。anonymous 是系统内部身份，不出现在管理页的下拉里。 */
-export const ASSIGNABLE_ROLES: Role[] = ['admin', 'operator', 'viewer', 'guest'];
-
-/**
- * 角色的默认能力集。
- *
- * 访客给得很克制：能看机器状态和整体流量，但看不到具体是谁在连、连的哪个端口 ——
- * 那些信息拼起来足以画出你的服务拓扑，不该对未经确认的人开放。
- */
-export const ROLE_CAPABILITIES: Record<Role, Capability[]> = {
-  admin: ALL_CAPABILITIES,
-
-  /*
-   * 运维能看设置但不能改。
-   *
-   * 他要按面板上的数字做判断，就得知道这些数字是按什么口径算出来的 ——
-   * "1.83 TB / 2 TB"到底安不安全，取决于进制是 1024 还是 1000。
-   * 但改口径影响的是所有人看到的所有数字，那是管理员的决定。
-   */
-  operator: [
-    'node:list', 'node:detail', 'node:full_ip', 'node:hardware', 'node:manage',
-    'traffic:daily', 'traffic:services', 'traffic:peers',
-    'block:view', 'block:preflight', 'block:dryrun', 'block:enforce', 'block:remove',
-    'alert:view', 'alert:manage',
-    'audit:view',
-    'settings:view',
-  ],
-
-  viewer: [
-    'node:list', 'node:detail', 'node:hardware',
-    'traffic:daily', 'traffic:services', 'traffic:peers',
-    'block:view',
-    'alert:view',
-    'settings:view',
-  ],
-
-  guest: [
-    'node:list', 'node:detail',
-    'traffic:daily',
-  ],
-
-  /**
-   * 完全未登录的人。
-   *
-   * 概览页是公开的状态页 —— 谁都能看到有几台机器、活着没有、负载多少。
-   * 但只到这一层：点进详情要有身份，因为详情页会暴露服务拓扑和对端地址，
-   * 而且需要能追溯是谁看的。
-   */
-  anonymous: ['node:list'],
-};
-
-/**
- * 算出用户的最终能力集：角色默认值 + 单独授予 - 单独收回。
- *
- * 收回优先于授予 —— 出现冲突时按更严格的那个来。
- */
-export function resolveCapabilities(
-  role: Role,
-  granted: string[] = [],
-  revoked: string[] = [],
-): Set<Capability> {
-  const set = new Set<Capability>(ROLE_CAPABILITIES[role] ?? []);
-  for (const c of granted) {
-    if (c in CAPABILITIES) set.add(c as Capability);
-  }
-  for (const c of revoked) {
-    set.delete(c as Capability);
-  }
-  return set;
+/** 服务端 /api/admin/capabilities 返回的角色。 */
+export interface RoleInfo {
+  value: string;
+  label: string;
+  description: string;
+  capabilities: Capability[];
+  system: boolean;
+  locked: boolean;
+  sortOrder: number;
+  userCount: number;
+  /** anonymous 不挂在任何账号上，不出现在"指派角色"的下拉里 */
+  assignable: boolean;
 }
 
-/** 能力点按展示分组，管理页用它渲染权限矩阵。 */
-export function groupedCapabilities(): Array<{ group: string; items: Array<{ key: Capability; label: string; risk: string }> }> {
+export function capabilityLabel(cap: string): string {
+  return (CAPABILITIES as Record<string, { label: string } | undefined>)[cap]?.label ?? cap;
+}
+
+export function capabilityRisk(cap: string): string {
+  return (CAPABILITIES as Record<string, { risk: string } | undefined>)[cap]?.risk ?? 'low';
+}
+
+/** 能力点按展示分组，权限矩阵用它渲染。 */
+export function groupedCapabilities(): Array<{
+  group: string;
+  items: Array<{ key: Capability; label: string; risk: string }>;
+}> {
   const map = new Map<string, Array<{ key: Capability; label: string; risk: string }>>();
   for (const key of ALL_CAPABILITIES) {
     const meta = CAPABILITIES[key];

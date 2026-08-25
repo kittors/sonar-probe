@@ -1,19 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { api, type AdminUser, type LedgerRow, type TrafficRule } from '../lib/api';
+import { api, ApiError, type AdminUser, type LedgerRow, type TrafficRule } from '../lib/api';
 import { AdminSettings } from './AdminSettings';
+import { AdminRoles } from './AdminRoles';
 import { useAsync, useLive } from '../lib/live';
 import { useAuth } from '../lib/auth';
-import { ASSIGNABLE_ROLES, ROLE_LABEL, type Capability, type Role } from '../lib/permissions';
+import { type Capability, type Role, type RoleInfo } from '../lib/permissions';
 import { ago, bytes, clockTime, count, isNearQuota, percent, quotaTone } from '../lib/format';
 import { CountryBadge } from '../components/CountryBadge';
+import { Modal } from '../components/Modal';
 import { Tooltip } from '../components/Tooltip';
-import { Chip, EmptyState, Field, RawCheckbox, SectionCard, Segmented, Select, Skeleton, Stat } from '../components/ui';
+import { Alert, Chip, EmptyState, Field, RawCheckbox, SectionCard, Segmented, Select, Skeleton, Stat } from '../components/ui';
 import {
   IconAlert,
   IconChevronLeft,
   IconCheck,
+  IconCopy,
   IconGlobe,
   IconInfo,
   IconShield,
@@ -21,7 +24,7 @@ import {
   IconX,
 } from '../components/icons';
 
-type Tab = 'users' | 'online' | 'audit' | 'traffic' | 'settings';
+type Tab = 'users' | 'roles' | 'online' | 'audit' | 'traffic' | 'settings';
 
 export function Admin() {
   const { can, me } = useAuth();
@@ -41,6 +44,9 @@ export function Admin() {
 
   const tabs: Array<{ value: Tab; label: string; show: boolean }> = [
     { value: 'users', label: '用户与权限', show: can('user:view') },
+    // 角色是"一次改一批人"的东西，紧挨着用户放，但排在后面 ——
+    // 日常要动的是某个人的权限，改角色是低频且影响面更大的操作
+    { value: 'roles', label: '角色', show: can('user:view') },
     { value: 'online', label: '在线与访客', show: can('audit:view') },
     { value: 'audit', label: '审计日志', show: can('audit:view') },
     { value: 'traffic', label: '流量阈值', show: can('alert:view') },
@@ -79,6 +85,7 @@ export function Admin() {
       </div>
 
       {active === 'users' && <UsersTab />}
+      {active === 'roles' && <AdminRoles />}
       {active === 'online' && <OnlineTab />}
       {active === 'audit' && <AuditTab />}
       {active === 'traffic' && <TrafficTab />}
@@ -98,7 +105,12 @@ function UsersTab() {
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [creating, setCreating] = useState(false);
+  const [resetFor, setResetFor] = useState<AdminUser | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<AdminUser | null>(null);
+
   const editable = can('user:manage');
+  const canCreate = can('user:create');
 
   async function patch(id: string, body: Parameters<typeof api.updateUser>[1]) {
     setError(null);
@@ -110,10 +122,22 @@ function UsersTab() {
     }
   }
 
+  async function remove(user: AdminUser) {
+    setError(null);
+    try {
+      await api.deleteUser(user.id);
+      setConfirmDelete(null);
+      users.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '删除失败');
+    }
+  }
+
   if (users.loading && !users.data) return <Skeleton height={260} />;
 
   const list = users.data ?? [];
   const admins = list.filter((u) => u.role === 'admin' && !u.disabled).length;
+  const roles = catalog.data?.roles ?? [];
 
   return (
     <>
@@ -139,13 +163,21 @@ function UsersTab() {
         title="用户"
         subtitle={`${list.length} 个账号 · ${admins} 位管理员 · ${list.filter((u) => u.kind === 'guest').length} 个访客身份`}
         padded={false}
-        actions={!editable ? <Chip>只读</Chip> : undefined}
+        actions={
+          canCreate ? (
+            <button className="ds-btn ds-btn-primary ds-btn-s" onClick={() => setCreating(true)}>
+              新建账号
+            </button>
+          ) : !editable ? (
+            <Chip>只读</Chip>
+          ) : undefined
+        }
       >
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 780 }}>
             <thead>
               <tr className="ds-text-caption text-ds-description">
-                {['用户', '来源', '角色', '能力数', '最近活跃', ''].map((h, i) => (
+                {['用户', '登录方式', '角色', '能力数', '最近活跃', ''].map((h, i) => (
                   <th
                     key={h + i}
                     style={{
@@ -169,6 +201,7 @@ function UsersTab() {
                   user={u}
                   isSelf={u.id === me?.id}
                   editable={editable}
+                  canCreate={canCreate}
                   expanded={editing === u.id}
                   onToggle={() => setEditing(editing === u.id ? null : u.id)}
                   onPatch={(body) => void patch(u.id, body)}
@@ -176,6 +209,9 @@ function UsersTab() {
                     await api.kickUser(u.id);
                     users.reload();
                   }}
+                  onResetPassword={() => setResetFor(u)}
+                  onDelete={() => setConfirmDelete(u)}
+                  roles={roles}
                   catalog={catalog.data}
                 />
               ))}
@@ -183,6 +219,56 @@ function UsersTab() {
           </table>
         </div>
       </SectionCard>
+
+      {creating && (
+        <CreateUserDialog
+          roles={roles}
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false);
+            users.reload();
+          }}
+        />
+      )}
+
+      {resetFor && (
+        <ResetPasswordDialog
+          user={resetFor}
+          onClose={() => setResetFor(null)}
+          onDone={() => users.reload()}
+        />
+      )}
+
+      {confirmDelete && (
+        <Modal
+          title="删除账号"
+          subtitle={`${confirmDelete.username || confirmDelete.login}（${confirmDelete.name}）`}
+          onClose={() => setConfirmDelete(null)}
+          width={420}
+          icon={<IconTrash size={16} />}
+          footer={
+            <>
+              <span style={{ flex: 1 }} />
+              <button className="ds-btn ds-btn-ghost" onClick={() => setConfirmDelete(null)}>
+                取消
+              </button>
+              <button
+                className="ds-btn ds-btn-danger"
+                onClick={() => void remove(confirmDelete)}
+              >
+                删除
+              </button>
+            </>
+          }
+        >
+          <Alert tone="danger" title="这一步不可撤销">
+            账号和它的全部登录方式会被删除，正在使用的会话立刻失效。
+            <br />
+            <br />
+            <b>审计日志会保留</b> —— 这个人做过什么仍然查得到，否则删号就成了洗白操作记录的手段。
+          </Alert>
+        </Modal>
+      )}
     </>
   );
 }
@@ -197,25 +283,43 @@ function UserRow({
   user,
   isSelf,
   editable,
+  canCreate,
   expanded,
   onToggle,
   onPatch,
   onKick,
+  onResetPassword,
+  onDelete,
+  roles,
   catalog,
 }: {
   user: AdminUser;
   isSelf: boolean;
   editable: boolean;
+  canCreate: boolean;
   expanded: boolean;
   onToggle: () => void;
   onPatch: (body: Parameters<typeof api.updateUser>[1]) => void;
   onKick: () => Promise<void>;
+  onResetPassword: () => void;
+  onDelete: () => void;
+  roles: RoleInfo[];
   catalog: Awaited<ReturnType<typeof api.adminCapabilities>> | null;
 }) {
   const caps = new Set(user.capabilities);
   const roleDefaults = new Set(
     catalog?.roles.find((r) => r.value === user.role)?.capabilities ?? [],
   );
+
+  /*
+   * 超级管理员的角色、停用、删除三个入口一律不渲染。
+   *
+   * 服务端也拦（auth.ts 的 updateUser / deleteUser），这里不渲染是为了别让人
+   * 白点一次再吃一个 409 —— 那种"看得见但用不了"正是这个项目一直避免的东西。
+   */
+  const protectedUser = user.isRoot;
+  const canEditRole = editable && !isSelf && !protectedUser;
+  const isGuest = user.kind === 'guest';
 
   /** 勾选 = 授予，取消 = 收回。相对角色默认值算出 granted/revoked 两个差集。 */
   function toggleCap(cap: Capability, on: boolean) {
@@ -266,28 +370,61 @@ function UserRow({
               >
                 {user.name}
                 {isSelf && <span className="ds-text-caption text-ds-description"> （你）</span>}
+                {user.isRoot && (
+                  <Tooltip content="超级管理员：不可降权、停用或删除">
+                    <span style={{ marginLeft: 5, color: 'var(--color-warn)' }}>
+                      <IconShield size={11} />
+                    </span>
+                  </Tooltip>
+                )}
               </span>
-              <span className="ds-text-caption text-ds-description">{user.login}</span>
+              <span className="ds-text-caption text-ds-description">
+                {user.username || user.login}
+                {user.mustChangePassword && (
+                  <span style={{ color: 'var(--color-warn)' }}> · 待改密</span>
+                )}
+              </span>
             </span>
           </span>
         </td>
         <td style={{ padding: '10px 12px' }}>
-          <Chip color={user.kind === 'github' ? 'var(--color-brand)' : undefined}>
-            {user.kind === 'github' ? 'GitHub' : '访客'}
-          </Chip>
+          {/*
+            列出实际绑定的登录方式，而不是一个二选一的"来源"。
+            同一个人可以既有密码又绑着 GitHub —— 旧的单值字段表达不了这件事，
+            而"他到底能怎么进来"正是管理员在这张表上最想知道的。
+          */}
+          <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {isGuest ? (
+              <Chip>访客</Chip>
+            ) : user.identities.length === 0 ? (
+              <Tooltip content="没有任何登录方式，这个账号进不来">
+                <Chip color="var(--color-danger)">无</Chip>
+              </Tooltip>
+            ) : (
+              user.identities.map((i) => (
+                <Tooltip key={i.provider} content={i.label}>
+                  <Chip color={i.provider === 'github' ? 'var(--color-brand)' : undefined}>
+                    {i.provider === 'github' ? 'GitHub' : '密码'}
+                  </Chip>
+                </Tooltip>
+              ))
+            )}
+          </span>
         </td>
         <td style={{ padding: '10px 12px' }}>
-          {editable && !isSelf ? (
+          {canEditRole ? (
             <Select
-                value={user.role}
-                onChange={(v) => onPatch({ role: v as Role })}
-                width={104}
-                ariaLabel="角色"
-                options={ASSIGNABLE_ROLES.map((r) => ({ value: r, label: ROLE_LABEL[r] }))}
-              />
+              value={user.role}
+              onChange={(v) => onPatch({ role: v as Role })}
+              width={120}
+              ariaLabel="角色"
+              options={roles
+                .filter((r) => r.assignable)
+                .map((r) => ({ value: r.value, label: r.label }))}
+            />
           ) : (
             <Chip color={user.role === 'admin' ? 'var(--color-danger)' : undefined}>
-              {ROLE_LABEL[user.role]}
+              {user.roleLabel}
             </Chip>
           )}
         </td>
@@ -317,14 +454,37 @@ function UserRow({
               >
                 踢下线
               </button>
-              <button
-                className="ds-btn ds-btn-ghost ds-btn-s"
-                style={{ marginLeft: 5, color: user.disabled ? 'var(--color-ok)' : 'var(--color-danger)' }}
-                onClick={() => onPatch({ disabled: !user.disabled })}
-              >
-                {user.disabled ? '启用' : '停用'}
-              </button>
+              {/* 访客没有密码可重置 */}
+              {!isGuest && (
+                <button
+                  className="ds-btn ds-btn-ghost ds-btn-s"
+                  style={{ marginLeft: 5 }}
+                  onClick={onResetPassword}
+                  title="生成一个新密码，对方下次登录必须修改"
+                >
+                  重置密码
+                </button>
+              )}
+              {!protectedUser && (
+                <button
+                  className="ds-btn ds-btn-ghost ds-btn-s"
+                  style={{ marginLeft: 5, color: user.disabled ? 'var(--color-ok)' : 'var(--color-danger)' }}
+                  onClick={() => onPatch({ disabled: !user.disabled })}
+                >
+                  {user.disabled ? '启用' : '停用'}
+                </button>
+              )}
             </>
+          )}
+          {canCreate && !isSelf && !protectedUser && (
+            <button
+              className="ds-btn ds-btn-ghost ds-btn-s"
+              style={{ marginLeft: 5, color: 'var(--color-danger)' }}
+              onClick={onDelete}
+              title="删除账号"
+            >
+              <IconTrash size={12} />
+            </button>
           )}
         </td>
       </tr>
@@ -421,6 +581,253 @@ function UserRow({
   );
 }
 
+/**
+ * 新建账号。
+ *
+ * 密码由管理员设定，但对方首次登录必须换掉 —— 这条是服务端强制的（mustChangePassword），
+ * 理由很直接：这个密码经过了第二个人的手，在对方改掉之前，账号有两个人能进。
+ */
+function CreateUserDialog({
+  roles,
+  onClose,
+  onCreated,
+}: {
+  roles: RoleInfo[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [username, setUsername] = useState('');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('viewer');
+  const [pw, setPw] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const assignable = roles.filter((r) => r.assignable);
+  const usernameError =
+    username && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,31}$/.test(username)
+      ? '2-32 位，字母或数字开头，只能含字母、数字、点、下划线、连字符'
+      : '';
+
+  async function submit() {
+    setBusy(true);
+    setError('');
+    try {
+      await api.createUser({
+        username: username.trim(),
+        password: pw,
+        name: name.trim() || undefined,
+        email: email.trim() || undefined,
+        role,
+        note: note.trim() || undefined,
+      });
+      onCreated();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : '创建失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="新建账号"
+      subtitle="创建一个用户名密码账号，对方也可以之后自行绑定 GitHub"
+      onClose={onClose}
+      width={560}
+      icon={<IconShield size={16} />}
+      footer={
+        <>
+          <span style={{ flex: 1 }} />
+          <button className="ds-btn ds-btn-ghost" onClick={onClose} disabled={busy}>
+            取消
+          </button>
+          <button
+            className="ds-btn ds-btn-primary"
+            onClick={() => void submit()}
+            disabled={busy || !username || !pw || !!usernameError}
+          >
+            {busy ? '创建中…' : '创建'}
+          </button>
+        </>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {error && <Alert tone="danger" title="创建失败">{error}</Alert>}
+
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <Field label="用户名" grow error={usernameError} hint="登录用，创建后不可更改">
+            <input
+              className="ds-input"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="zhangsan"
+              autoFocus
+            />
+          </Field>
+          <Field label="显示名称" grow hint="留空则用用户名">
+            <input
+              className="ds-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="张三"
+            />
+          </Field>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <Field label="初始密码" grow hint="至少 10 位、两类以上字符，且不能包含用户名">
+            <input
+              className="ds-input"
+              type="text"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              placeholder="对方首次登录后必须修改"
+            />
+          </Field>
+          <Field label="角色" hint="决定他能做什么">
+            <Select
+              value={role}
+              onChange={setRole}
+              width={160}
+              ariaLabel="角色"
+              options={assignable.map((r) => ({ value: r.value, label: r.label }))}
+            />
+          </Field>
+        </div>
+
+        <Field label="邮箱" hint="仅用于展示，不会发信">
+          <input className="ds-input" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+
+        <Field label="备注" hint="给管理员自己看的，比如「外包，10 月底到期」">
+          <input className="ds-input" value={note} onChange={(e) => setNote(e.target.value)} />
+        </Field>
+
+        {role && (
+          <Alert tone="info" title={`${assignable.find((r) => r.value === role)?.label ?? role} 能做什么`}>
+            {assignable.find((r) => r.value === role)?.description || '这个角色还没有写说明。'}
+            {' '}共 {assignable.find((r) => r.value === role)?.capabilities.length ?? 0} 项能力。
+          </Alert>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * 重置密码。
+ *
+ * 新密码只在这一次响应里回显，服务端不留明文、也不写进日志。
+ * 关掉这个框之后没有任何地方能再看到它 —— 所以复制按钮必须显眼。
+ */
+function ResetPasswordDialog({
+  user,
+  onClose,
+  onDone,
+}: {
+  user: AdminUser;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [custom, setCustom] = useState('');
+  const [result, setResult] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setError('');
+    try {
+      const res = await api.resetUserPassword(user.id, custom.trim() || undefined);
+      setResult(res.password);
+      onDone();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : '重置失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function copy() {
+    void navigator.clipboard.writeText(result).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }
+
+  return (
+    <Modal
+      title="重置密码"
+      subtitle={`${user.username || user.login}（${user.name}）`}
+      onClose={onClose}
+      width={480}
+      icon={<IconShield size={16} />}
+      footer={
+        result ? (
+          <>
+            <span style={{ flex: 1 }} />
+            <button className="ds-btn ds-btn-primary" onClick={onClose}>
+              我已记下
+            </button>
+          </>
+        ) : (
+          <>
+            <span style={{ flex: 1 }} />
+            <button className="ds-btn ds-btn-ghost" onClick={onClose} disabled={busy}>
+              取消
+            </button>
+            <button className="ds-btn ds-btn-danger" onClick={() => void submit()} disabled={busy}>
+              {busy ? '重置中…' : '重置'}
+            </button>
+          </>
+        )
+      }
+    >
+      {result ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Alert tone="success" title="新密码已生效">
+            对方所有登录状态已失效，下次登录必须修改这个密码。
+          </Alert>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span className="ds-text-caption text-ds-description" style={{ flex: 1 }}>
+                新密码
+              </span>
+              <button className="ds-btn ds-btn-ghost ds-btn-s" onClick={copy}>
+                {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
+                {copied ? '已复制' : '复制'}
+              </button>
+            </div>
+            <pre className="ds-enroll-cmd" style={{ margin: 0 }}>{result}</pre>
+          </div>
+          <Alert tone="warn" title="这是唯一一次显示">
+            关掉之后再也看不到 —— 服务端只存哈希，不留明文。现在就把它交给本人。
+          </Alert>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {error && <Alert tone="danger" title="重置失败">{error}</Alert>}
+          <Alert tone="warn" title="重置会立刻踢掉对方所有登录">
+            如果只是对方忘了密码，这是正常流程；如果怀疑账号被盗，重置之后记得同时检查审计日志。
+          </Alert>
+          <Field label="指定新密码" hint="留空则由系统生成一个 20 位随机密码（推荐）">
+            <input
+              className="ds-input"
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              placeholder="留空自动生成"
+            />
+          </Field>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // ————————————————————————————————————————————————————————
 // 在线与访客
 // ————————————————————————————————————————————————————————
@@ -505,11 +912,11 @@ function OnlineTab() {
                     {o.user.name}
                   </span>
                   <span className="ds-text-caption text-ds-description">
-                    {ROLE_LABEL[o.user.role]}
+                    {o.user.roleLabel}
                   </span>
                 </span>
-                <Chip color={o.user.kind === 'github' ? 'var(--color-brand)' : undefined}>
-                  {o.user.kind === 'github' ? 'GitHub' : '访客'}
+                <Chip color={o.user.kind === 'guest' ? undefined : 'var(--color-brand)'}>
+                  {o.user.kind === 'guest' ? '访客' : '账号'}
                 </Chip>
                 <span className="ds-text-caption text-ds-description tnum" style={{ minWidth: 108 }}>
                   {o.ip}

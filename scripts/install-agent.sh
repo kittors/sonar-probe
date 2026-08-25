@@ -20,6 +20,7 @@ COUNTRY=""
 PROVIDER=""
 TAGS=""
 ENFORCE=0
+SSH_KEYS=0
 CHECK_ONLY=0
 ENSURE_CT=1
 BINARY=""
@@ -51,6 +52,9 @@ usage() {
   --tags <标签>      逗号分隔，如 生产,代理
   --binary <路径>    用本地已编译好的二进制，而不是现场下载
   --enforce          允许真正修改防火墙。不加时封禁指令只打印不执行
+  --ssh-keys         允许面板远程增删本机的 authorized_keys。
+                     不加时密钥指令只打印不执行（和 --enforce 一个道理）。
+                     注意：SSH 实况上报不受它控制 —— 那一项是只读的，一直开着
   --check-only       只检查这台机器能采到什么，不安装、不改任何东西
   --no-conntrack     不要为流量归因做任何内核侧配置。
                      默认会自动补齐：开启 conntrack 字节计数、必要时装一条
@@ -74,6 +78,7 @@ while [ $# -gt 0 ]; do
     --binary)   BINARY="${2:-}"; shift 2 ;;
     --interval) INTERVAL="${2:-}"; shift 2 ;;
     --enforce)  ENFORCE=1; shift ;;
+    --ssh-keys) SSH_KEYS=1; shift ;;
     --check-only) CHECK_ONLY=1; shift ;;
     --ensure-conntrack) ENSURE_CT=1; shift ;;
     --no-conntrack) ENSURE_CT=0; shift ;;
@@ -382,6 +387,17 @@ chmod 600 "$ENV_FILE"
 ENFORCE_FLAG=""
 [ "$ENFORCE" -eq 1 ] && ENFORCE_FLAG=" -enforce"
 
+# 远程改 authorized_keys 是面板唯一能改变机器状态的能力，默认关闭。
+# 开了它，面板一旦被攻破就等于拿到了这台机器
+SSH_KEYS_FLAG=""
+SSH_KEYS_RW=""
+if [ "$SSH_KEYS" -eq 1 ]; then
+  SSH_KEYS_FLAG=" -ssh-keys"
+  # 只在开了远程下发时才给家目录开写权限。/home 前面的 - 表示"不存在也不算错"——
+  # 有些机器只有 root 一个账号，没有 /home，写死会让整个单元起不来
+  SSH_KEYS_RW=$'\nReadWritePaths=/root -/home'
+fi
+
 # 直接把值传成命令行参数，不走环境变量。
 #
 # 之前这里用 Environment="SONAR_NAME=..."，但 agent 读的是 SONAR_NODE_NAME ——
@@ -409,13 +425,21 @@ WorkingDirectory=$PREFIX
 EnvironmentFile=$ENV_FILE
 # interval 是 Go 的 flag.Duration，必须带单位 —— 传裸数字会让 flag 解析失败，
 # agent 打印 usage 后以 exit 2 退出，systemd 就一直起不来
-ExecStart=$PREFIX/sonar-agent -id "$NODE_ID" -panel "$PANEL" -token "\${SONAR_TOKEN}" -interval ${INTERVAL}s$OPT_ARGS$ENFORCE_FLAG
+ExecStart=$PREFIX/sonar-agent -id "$NODE_ID" -panel "$PANEL" -token "\${SONAR_TOKEN}" -interval ${INTERVAL}s$OPT_ARGS$ENFORCE_FLAG$SSH_KEYS_FLAG
 Restart=always
 RestartSec=5
 
 # 采集端需要 root 读 /proc/<pid>/fd，但其余权限可以收紧
 NoNewPrivileges=true
-ProtectHome=true
+# ProtectHome 不能是 true。
+#
+# true 会让 /root 和 /home 对服务完全不可见，于是 SSH 实况里的
+# authorized_keys 永远扫不到 —— 而扫不到的表现是"这台机器一把钥匙都没有"，
+# 那正是最容易让人误判的结果（看起来很干净，其实只是没读到）。
+#
+# read-only 保留了读的能力，同时仍然挡住写。需要远程改密钥时由下面的
+# ReadWritePaths 单独开口子，比整个关掉 ProtectHome 收敛得多。
+ProtectHome=read-only$SSH_KEYS_RW
 PrivateTmp=true
 ProtectKernelModules=true
 RestrictRealtime=true
@@ -466,6 +490,7 @@ cat <<EOF
     每 ${INTERVAL} 秒上报一次，几秒后应该就能在面板上看到它。
 
 $( [ "$ENFORCE" -eq 1 ] && printf '    %s封禁已设为可执行模式%s —— 面板下发 enforce 指令会真正修改防火墙。\n' "$C_WARN" "$C_0" || printf '    封禁处于只读模式：面板下发的指令只会打印，不会真改防火墙。\n    确认流程没问题后，加 --enforce 重跑本脚本即可放开。\n' )
+$( [ "$SSH_KEYS" -eq 1 ] && printf '    %sSSH 密钥已设为可写模式%s —— 面板可以远程增删本机的 authorized_keys。\n' "$C_WARN" "$C_0" || printf '    SSH 密钥为只读：会上报实况供面板对账，但面板下发的增删指令只打印。\n    需要远程下发时加 --ssh-keys 重跑本脚本。\n' )
 $( [ "$CT_READY" -eq 0 ] && printf '    %s流量归因暂不可用%s —— 见上面的 conntrack 说明。\n' "$C_WARN" "$C_0" )
     ${C_DIM}配置  $ENV_FILE
     日志  journalctl -u sonar-agent -f

@@ -144,6 +144,206 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github ON users(github_id) WHERE github_id IS NOT NULL;
 
+/*
+ * 角色表。
+ *
+ * 角色原先是 permissions.ts 里的一个 Record 常量 —— 加一个角色要改代码、
+ * 重新构建、重新部署，而"给这批人一个只能看流量不能看 IP 的身份"是运行期
+ * 才会冒出来的需求，不该是发版才能满足的事。
+ *
+ * 但**能力点仍然是代码常量**，只有角色到能力的映射挪进了库。原因是能力点
+ * 一一对应路由上的 requireCap：凭空造一个 'node:destroy' 存进来，没有任何
+ * 代码会读它，它只是一行让人误以为有效的配置。
+ *
+ * id 直接沿用旧的角色字符串（admin/operator/viewer/guest/anonymous），
+ * 于是 users.role 原地变成外键，历史数据一行都不用迁。
+ */
+CREATE TABLE IF NOT EXISTS roles (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  -- 系统角色：不可删除、id 不可改。admin/anonymous 另有更强的约束，见 roles.ts
+  system       INTEGER NOT NULL DEFAULT 0,
+  -- 能力集锁定：admin 恒等于全部能力，锁住避免把自己关在门外
+  locked       INTEGER NOT NULL DEFAULT 0,
+  sort_order   INTEGER NOT NULL DEFAULT 100,
+  created_at   INTEGER NOT NULL DEFAULT 0,
+  updated_at   INTEGER NOT NULL DEFAULT 0
+);
+
+/*
+ * 身份表：一个人可以有多种登录方式。
+ *
+ * 原先身份和用户是一张表 —— users.kind 决定你是 github 用户还是访客，
+ * users.github_id 是唯一的外部标识。这个结构里"同一个人既能用密码登录、
+ * 又绑着 GitHub"根本表达不出来，因为一行只放得下一个 github_id。
+ *
+ * provider_uid 的含义随 provider 而变：password 存用户名，github 存数字 id。
+ * secret 只有 password 用（scrypt 哈希），github 那行恒为空 —— OAuth 的凭据
+ * 在 GitHub 手里，我们这儿不该有任何可复用的东西。
+ */
+CREATE TABLE IF NOT EXISTS identities (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  provider     TEXT NOT NULL,
+  provider_uid TEXT NOT NULL,
+  secret       TEXT NOT NULL DEFAULT '',
+  meta         TEXT NOT NULL DEFAULT '{}',
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_identities_uid ON identities(provider, provider_uid);
+CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id);
+
+/*
+ * ——————————————————————————————————————————————
+ * SSH 管理
+ * ——————————————————————————————————————————————
+ *
+ * 三张主表分别回答三个问题：我有哪些钥匙、哪把钥匙开哪台机器、这台机器怎么连。
+ * 第四张（ssh_observed_keys）存的是 agent 从机器上扫回来的**实况**，
+ * 和前三张的"面板记录"分开放 —— 两者的差异才是这套东西最有价值的部分。
+ */
+
+/** 我的钥匙。公钥原文要存（生成命令时用），私钥永远不经过面板。 */
+CREATE TABLE IF NOT EXISTS ssh_keys (
+  id            TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL,
+  label         TEXT NOT NULL DEFAULT '',
+  key_type      TEXT NOT NULL,
+  public_key    TEXT NOT NULL,
+  fingerprint   TEXT NOT NULL,
+  bits          INTEGER NOT NULL DEFAULT 0,
+  source        TEXT NOT NULL DEFAULT 'manual',
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER NOT NULL DEFAULT 0,
+  disabled      INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+/*
+ * 同一把公钥不允许被两个人登记。
+ *
+ * 允许的话，"这台机器上的这把 key 是谁的"就有两个答案，而这正是出事之后
+ * 唯一要回答的问题。谁先登记算谁的，第二个人会看到明确的冲突提示。
+ */
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ssh_keys_fp ON ssh_keys(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_ssh_keys_owner ON ssh_keys(owner_user_id);
+
+/** 授权：谁的哪把钥匙，开哪台机器的哪个账号。 */
+CREATE TABLE IF NOT EXISTS ssh_grants (
+  id            TEXT PRIMARY KEY,
+  node_id       TEXT NOT NULL,
+  key_id        TEXT NOT NULL,
+  remote_user   TEXT NOT NULL DEFAULT 'root',
+  -- pending=命令已生成还没看到落地, active=实况里确认存在, drifted=面板有机器上没有,
+  -- revoked=已撤销, failed=下发失败
+  state         TEXT NOT NULL DEFAULT 'pending',
+  -- 审批流。关掉审批时直接是 approved
+  request_state TEXT NOT NULL DEFAULT 'approved',
+  expires_at    INTEGER NOT NULL DEFAULT 0,
+  -- command=人工粘贴, agent=经 agent 远程下发
+  method        TEXT NOT NULL DEFAULT 'command',
+  requested_by  TEXT NOT NULL DEFAULT '',
+  granted_by    TEXT NOT NULL DEFAULT '',
+  granted_at    INTEGER NOT NULL DEFAULT 0,
+  approved_by   TEXT NOT NULL DEFAULT '',
+  approved_at   INTEGER NOT NULL DEFAULT 0,
+  reject_reason TEXT NOT NULL DEFAULT '',
+  -- 机器实况里第一次看到它的时刻。**只有它才算真的生效**，见 store 里的对账逻辑
+  applied_at    INTEGER NOT NULL DEFAULT 0,
+  revoked_by    TEXT NOT NULL DEFAULT '',
+  revoked_at    INTEGER NOT NULL DEFAULT 0,
+  note          TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY (key_id) REFERENCES ssh_keys(id) ON DELETE CASCADE
+);
+
+/*
+ * 一把钥匙对一台机器的一个账号，只能有一条有效授权。
+ *
+ * 部分索引把已撤销的排除在外 —— 否则"授权、撤销、再授权"这个完全正常的
+ * 序列会在第三步撞上唯一约束。
+ */
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ssh_grants_live
+  ON ssh_grants(node_id, key_id, remote_user) WHERE state != 'revoked';
+CREATE INDEX IF NOT EXISTS idx_ssh_grants_node ON ssh_grants(node_id, state);
+CREATE INDEX IF NOT EXISTS idx_ssh_grants_key ON ssh_grants(key_id);
+
+/** 怎么连：别名、地址、端口、跳板，以及 agent 上报的 sshd 实况。 */
+CREATE TABLE IF NOT EXISTS ssh_endpoints (
+  node_id           TEXT PRIMARY KEY,
+  alias             TEXT NOT NULL,
+  -- 留空则回落到 nodes.ip。见 store 里的说明：出口 IP 不等于入口地址
+  hostname          TEXT NOT NULL DEFAULT '',
+  port              INTEGER NOT NULL DEFAULT 22,
+  default_user      TEXT NOT NULL DEFAULT 'root',
+  proxy_jump        TEXT NOT NULL DEFAULT '',
+  identity_file     TEXT NOT NULL DEFAULT '',
+  -- —— 以下由 agent 上报，人改不了
+  host_keys         TEXT NOT NULL DEFAULT '[]',
+  sshd_version      TEXT NOT NULL DEFAULT '',
+  sshd_port         INTEGER NOT NULL DEFAULT 0,
+  password_auth     INTEGER NOT NULL DEFAULT -1,
+  permit_root_login TEXT NOT NULL DEFAULT '',
+  observed_at       INTEGER NOT NULL DEFAULT 0,
+  updated_at        INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ssh_endpoints_alias ON ssh_endpoints(alias);
+
+/*
+ * 机器实况：agent 扫出来的 authorized_keys。
+ *
+ * **只存指纹，不存公钥原文。** 公钥本身不是秘密，但"哪些公钥能进哪些机器"
+ * 的完整地图对定向攻击极有价值 —— 面板被拖库时，指纹足够做对账和展示，
+ * 却不足以复原出可用的公钥。
+ */
+CREATE TABLE IF NOT EXISTS ssh_observed_keys (
+  node_id     TEXT NOT NULL,
+  remote_user TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  key_type    TEXT NOT NULL DEFAULT '',
+  comment     TEXT NOT NULL DEFAULT '',
+  -- 带 sonar: 前缀的才是我们装的，删除时只认这个
+  managed     INTEGER NOT NULL DEFAULT 0,
+  options     TEXT NOT NULL DEFAULT '',
+  seen_at     INTEGER NOT NULL,
+  PRIMARY KEY (node_id, remote_user, fingerprint)
+) WITHOUT ROWID;
+
+/*
+ * 面板下发给 agent 的指令队列。
+ *
+ * 封禁那条链路一直是"agent 侧写好了、面板从没真发过"（index.ts 里
+ * 那句 return { ok: true, commands: [] }）。SSH 远程下发要用它，所以在这里补齐，
+ * 顺带把封禁也接上。
+ *
+ * payload 存结构化参数而不是命令字符串 —— agent 拿到参数自己构造操作，
+ * 一个字都不看面板给的展示文本。面板被攻破也没法借此在机器上执行任意代码。
+ */
+CREATE TABLE IF NOT EXISTS agent_commands (
+  id          TEXT PRIMARY KEY,
+  node_id     TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  payload     TEXT NOT NULL DEFAULT '{}',
+  -- 仅供展示与存档，agent 不执行它
+  preview     TEXT NOT NULL DEFAULT '[]',
+  state       TEXT NOT NULL DEFAULT 'pending',
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL,
+  claimed_at  INTEGER NOT NULL DEFAULT 0,
+  finished_at INTEGER NOT NULL DEFAULT 0,
+  result      TEXT NOT NULL DEFAULT '',
+  operator    TEXT NOT NULL DEFAULT '',
+  -- 关联的业务对象（如 ssh_grants.id），回执时用它更新对应状态
+  ref_id      TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_commands_pending ON agent_commands(node_id, state);
+
 CREATE TABLE IF NOT EXISTS sessions (
   id          TEXT PRIMARY KEY,
   user_id     TEXT NOT NULL,
@@ -251,6 +451,42 @@ addColumnIfMissing('nodes', 'billing_day', 'INTEGER NOT NULL DEFAULT 0');
  */
 addColumnIfMissing('nodes', 'traffic_offset', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('nodes', 'traffic_offset_cycle', "TEXT NOT NULL DEFAULT ''");
+
+// —— 用户：密码登录与超级管理员
+
+/*
+ * 登录用户名。密码身份的 provider_uid 也是它，两处保持一致由 identities.ts 保证。
+ *
+ * 单独在 users 上留一列而不是每次去 join identities：用户列表、审计、在线列表
+ * 都要显示它，join 一次能省，join 二十次就是无谓的复杂度。
+ */
+addColumnIfMissing('users', 'username', "TEXT NOT NULL DEFAULT ''");
+
+/*
+ * 超级管理员。
+ *
+ * "第一个 GitHub 登录者自动成为管理员"解决了冷启动，但没解决"这个面板永远
+ * 有人管得住"—— admin 之间可以互相降权，最后一个 admin 的保护也只在
+ * activeAdminCount() 这一处，绕过它的路径（删除用户、改角色能力集）一多就漏。
+ *
+ * is_root 是一个不依赖计数的锚点：它不可删除、不可停用、不可降权、
+ * 角色恒为 admin。面板可以没有其他任何人，但一定有它。
+ */
+addColumnIfMissing('users', 'is_root', 'INTEGER NOT NULL DEFAULT 0');
+
+/** 初始密码是系统生成的，第一次登录必须换掉才能用面板。 */
+addColumnIfMissing('users', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0');
+
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username) WHERE username != ''`);
+
+/*
+ * kind 的语义调整：'github' → 'user'。
+ *
+ * 拆出 identities 之后，"用什么方式登录"不再是用户的属性 —— 同一个人可以
+ * 既有密码又绑着 GitHub，kind='github' 就自相矛盾了。剩下的真实区别只有
+ * "正式用户"和"临时访客"：后者会话短、自动创建、不能绑身份。
+ */
+db.exec(`UPDATE users SET kind='user' WHERE kind='github'`);
 
 /**
  * 清掉模拟器生成的所有数据。

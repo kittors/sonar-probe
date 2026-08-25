@@ -158,6 +158,19 @@ class LiveStore {
            */
           applyPushedSettings(msg.settings);
           break;
+        case 'auth-refresh':
+          /*
+           * 我的权限被改了。
+           *
+           * 走 window 事件而不是直接调 AuthProvider：这个 store 是模块级单例，
+           * 在 React 树之外，拿不到 context。事件是两者之间唯一不引入反向依赖的接法。
+           *
+           * 同时清掉机器缓存 —— 缓存里的字段是按旧权限裁剪过的（比如未打码的 IP），
+           * 降权之后继续拿它渲染，等于降权在本地没有生效。
+           */
+          clearLiveCache();
+          window.dispatchEvent(new Event('sonar:auth-refresh'));
+          break;
       }
       this.emit();
     };

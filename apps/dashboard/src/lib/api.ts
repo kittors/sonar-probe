@@ -7,8 +7,13 @@ import type {
   NodeState,
   PeerTraffic,
   ServiceTraffic,
+  SshDrift,
+  SshEndpoint,
+  SshGrant,
+  SshKey,
+  SshPreflightResult,
 } from './types';
-import type { Capability, Role } from './permissions';
+import type { Capability, Role, RoleInfo } from './permissions';
 import type { Currency } from './currency';
 import type { PublicSettings } from './settings';
 import type { Me } from './auth';
@@ -172,11 +177,55 @@ export const api = {
 
   updateUser: (
     id: string,
-    body: { role?: Role; granted?: string[]; revoked?: string[]; disabled?: boolean; note?: string },
+    body: {
+      role?: Role;
+      granted?: string[];
+      revoked?: string[];
+      disabled?: boolean;
+      note?: string;
+      name?: string;
+    },
   ) => req<AdminUser>(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  createUser: (body: {
+    username: string;
+    password: string;
+    name?: string;
+    email?: string;
+    role?: string;
+    note?: string;
+  }) => req<AdminUser>('/api/admin/users', { method: 'POST', body: JSON.stringify(body) }),
+
+  deleteUser: (id: string) =>
+    req<{ ok: boolean }>(`/api/admin/users/${id}`, { method: 'DELETE' }),
+
+  /** 回显的新密码只在这一次响应里出现，服务端不留明文 */
+  resetUserPassword: (id: string, password?: string) =>
+    req<{ ok: boolean; password: string; mustChange: boolean }>(
+      `/api/admin/users/${id}/password`,
+      { method: 'POST', body: JSON.stringify({ password }) },
+    ),
 
   kickUser: (id: string) =>
     req<{ ok: boolean }>(`/api/admin/users/${id}/sessions/revoke`, { method: 'POST' }),
+
+  // —— 角色
+
+  createRole: (body: {
+    id: string;
+    name: string;
+    description?: string;
+    capabilities?: string[];
+    sortOrder?: number;
+  }) => req<RoleDetail>('/api/admin/roles', { method: 'POST', body: JSON.stringify(body) }),
+
+  updateRole: (
+    id: string,
+    body: { name?: string; description?: string; capabilities?: string[]; sortOrder?: number },
+  ) => req<RoleDetail>(`/api/admin/roles/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  deleteRole: (id: string) =>
+    req<{ ok: boolean }>(`/api/admin/roles/${id}`, { method: 'DELETE' }),
 
   /** 接入新机器所需的信息。含 agent token，需要 node:manage 权限 */
   enrollInfo: () =>
@@ -210,7 +259,175 @@ export const api = {
     }),
 
   refreshRates: () => req<RatesPayload>('/api/settings/rates/refresh', { method: 'POST' }),
+
+  // —— SSH
+
+  sshKeys: () => req<SshKey[]>('/api/ssh/keys'),
+
+  addSshKey: (publicKey: string, label?: string) =>
+    req<SshKey>('/api/ssh/keys', { method: 'POST', body: JSON.stringify({ publicKey, label }) }),
+
+  importGithubKeys: () =>
+    req<{ added: number; skipped: string[]; keys: SshKey[] }>('/api/ssh/keys/import/github', {
+      method: 'POST',
+    }),
+
+  updateSshKey: (id: string, body: { label?: string; disabled?: boolean }) =>
+    req<SshKey>(`/api/ssh/keys/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  deleteSshKey: (id: string) => req<{ ok: boolean }>(`/api/ssh/keys/${id}`, { method: 'DELETE' }),
+
+  sshEndpoints: () => req<SshEndpoint[]>('/api/ssh/endpoints'),
+
+  updateSshEndpoint: (
+    id: string,
+    body: {
+      alias?: string;
+      hostname?: string;
+      port?: number;
+      defaultUser?: string;
+      proxyJump?: string;
+      identityFile?: string;
+    },
+  ) => req<SshEndpoint>(`/api/ssh/endpoints/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  sshConfig: (nodes?: string[]) =>
+    req<{ config: string; knownHosts: string; count: number; missingHostKeys: number }>(
+      `/api/ssh/config${nodes?.length ? `?nodes=${nodes.join(',')}` : ''}`,
+    ),
+
+  sshDrift: (node?: string) => req<SshDrift[]>(`/api/ssh/drift${node ? `?node=${node}` : ''}`),
+
+  sshGrants: (opts: { node?: string; key?: string; mine?: boolean } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.node) p.set('node', opts.node);
+    if (opts.key) p.set('key', opts.key);
+    if (opts.mine) p.set('mine', '1');
+    return req<SshGrant[]>(`/api/ssh/grants?${p}`);
+  },
+
+  sshPreflight: (body: { nodeId: string; keyId: string; remoteUser?: string; expiresAt?: number }) =>
+    req<SshPreflightResult>('/api/ssh/grants/preflight', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  createSshGrant: (body: {
+    nodeId: string;
+    keyId: string;
+    remoteUser?: string;
+    expiresAt?: number;
+    note?: string;
+    useAgent?: boolean;
+  }) =>
+    req<{ grant: SshGrant; preflight: SshPreflightResult; commands: string[] }>('/api/ssh/grants', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  sshGrantCommands: (id: string) =>
+    req<{ commands: string[] }>(`/api/ssh/grants/${id}/commands`),
+
+  approveSshGrant: (id: string) =>
+    req<{ grant: SshGrant; commands: string[] }>(`/api/ssh/grants/${id}/approve`, { method: 'POST' }),
+
+  rejectSshGrant: (id: string, reason?: string) =>
+    req<SshGrant>(`/api/ssh/grants/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+
+  revokeSshGrant: (id: string, useAgent?: boolean) =>
+    req<{ ok: boolean; commands: string[]; preflight: SshPreflightResult; dispatched: boolean }>(
+      `/api/ssh/grants/${id}/revoke`,
+      { method: 'POST', body: JSON.stringify({ useAgent }) },
+    ),
+
+  /** 某个人的全部授权，人员离场时一键列出 */
+  sshUserGrants: (userId: string) =>
+    req<{
+      grants: SshGrant[];
+      commands: Array<{
+        grantId: string;
+        nodeId: string;
+        nodeName: string;
+        remoteUser: string;
+        commands: string[];
+      }>;
+    }>(`/api/ssh/users/${userId}/grants`),
+
+  sshExport: () => req<SshExport>('/api/ssh/export'),
+
+  sshCommands: (node?: string) =>
+    req<AgentCommandRow[]>(`/api/ssh/commands${node ? `?node=${node}` : ''}`),
+
+  // —— 个人设置
+
+  changePassword: (current: string, next: string) =>
+    req<{ ok: boolean }>('/api/me/password', {
+      method: 'POST',
+      body: JSON.stringify({ current, next }),
+    }),
+
+  updateProfile: (body: { name?: string; email?: string }) =>
+    req<{ user: Me }>('/api/me', { method: 'PATCH', body: JSON.stringify(body) }),
+
+  myIdentities: () => req<{ identities: IdentityInfo[] }>('/api/me/identities'),
+
+  unbindIdentity: (provider: 'github' | 'password') =>
+    req<{ ok: boolean; identities: IdentityInfo[] }>(`/api/me/identities/${provider}`, {
+      method: 'DELETE',
+    }),
 };
+
+export interface SshExport {
+  generatedAt: number;
+  grants: Array<{
+    node: string;
+    nodeName: string;
+    remoteUser: string;
+    owner: string;
+    fingerprint: string;
+    state: string;
+    grantedAt: number;
+    expiresAt: number;
+    revokeCommands: string[];
+  }>;
+}
+
+export interface AgentCommandRow {
+  id: string;
+  nodeId: string;
+  kind: string;
+  preview: string[];
+  state: 'pending' | 'sent' | 'done' | 'failed';
+  attempts: number;
+  createdAt: number;
+  finishedAt: number;
+  result: string;
+  operator: string;
+  refId: string;
+}
+
+export interface IdentityInfo {
+  provider: 'password' | 'github';
+  /** 密码身份是用户名，GitHub 是它的 login */
+  label: string;
+  createdAt: number;
+  lastUsedAt: number;
+}
+
+export interface RoleDetail {
+  id: string;
+  name: string;
+  description: string;
+  capabilities: Capability[];
+  system: boolean;
+  locked: boolean;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+}
 
 // ————————————————————————————————————————————————————————
 // 设置相关类型
@@ -315,11 +532,12 @@ export interface AdminUser extends Me {
   granted: string[];
   revoked: string[];
   capabilities: Capability[];
+  identities: IdentityInfo[];
 }
 
 export interface CapabilityCatalog {
   groups: Array<{ group: string; items: Array<{ key: Capability; label: string; risk: string }> }>;
-  roles: Array<{ value: Role; label: string; capabilities: Capability[] }>;
+  roles: RoleInfo[];
   all: Capability[];
 }
 

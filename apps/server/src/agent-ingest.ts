@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { db } from './db.js';
 import { dayKeyIn, getSettings } from './settings.js';
 import { logEvent } from './store.js';
@@ -63,6 +63,23 @@ export interface AgentReport {
   metric: Partial<Metric>;
   services?: AgentServiceTraffic[];
   peers?: AgentPeerTraffic[];
+  /** 每机独立密钥。没带就只能上报，拿不到下发指令 */
+  secret?: string;
+  /** SSH 实况，老 agent 不带这一段 */
+  ssh?: {
+    sshdVersion?: string;
+    sshdPort?: number;
+    passwordAuth?: boolean | null;
+    permitRootLogin?: string;
+    hostKeys?: Array<{ type: string; blob: string }>;
+    keys?: Array<{
+      remoteUser: string;
+      fingerprint: string;
+      keyType?: string;
+      comment?: string;
+      options?: string;
+    }>;
+  };
 }
 
 /**
@@ -124,6 +141,48 @@ function safeCompare(a: string, b: string): boolean {
 
 export function agentIngestEnabled(): boolean {
   return Boolean(process.env.SONAR_AGENT_TOKEN);
+}
+
+/**
+ * 每机独立密钥
+ *
+ * SONAR_AGENT_TOKEN 是全机队共享的，任何一台机器的 systemd unit 里都读得到。
+ * 在"只上报数据"的年代这不算致命，但一旦通道能反向下发密钥变更，同一个 token
+ * 让攻击者可以：
+ *
+ *   - 拉取**任意** nodeId 的待办指令 → 看到面板打算给哪台机器装谁的钥匙
+ *   - 冒充**任意** nodeId 发回执 → 让面板显示一个虚假的"已撤销"
+ *
+ * 第二条尤其恶劣：它比没有这个功能更糟，因为人会依据那个假状态做安全决策。
+ *
+ * 所以 nodes.secret（建表时就有、一直空着的那一列）在这里启用：注册时生成并
+ * 返回给 agent，之后上报带上它。token 退化成"入队凭据"，secret 才是身份。
+ */
+export function issueNodeSecret(nodeId: string): string {
+  const secret = randomBytes(32).toString('base64url');
+  db.prepare('UPDATE nodes SET secret=? WHERE id=?').run(secret, nodeId);
+  return secret;
+}
+
+export function nodeSecret(nodeId: string): string {
+  const row = db.prepare('SELECT secret FROM nodes WHERE id=?').get(nodeId) as
+    | { secret: string }
+    | undefined;
+  return row?.secret ?? '';
+}
+
+/**
+ * 校验一台机器的身份。
+ *
+ * secret 没配（老 agent、或还没升级）时返回 false —— 调用方据此只放行上报、
+ * 不放行下发。这道闸门让升级是自愿且可回滚的：老 agent 一切如常，
+ * 新能力只给验证过身份的那些。
+ */
+export function nodeSecretValid(nodeId: string, secret: string | undefined): boolean {
+  if (!nodeId || typeof secret !== 'string' || !secret) return false;
+  const expected = nodeSecret(nodeId);
+  if (!expected) return false;
+  return safeCompare(secret, expected);
 }
 
 /** agent 首次连上或重启后调用，写入机器画像。 */

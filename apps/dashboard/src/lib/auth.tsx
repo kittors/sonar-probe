@@ -11,7 +11,9 @@ import { clearLiveCache } from './live';
 
 export interface Me {
   id: string;
-  kind: 'github' | 'guest';
+  /** user 是正式账号（可能有密码、GitHub 或两者），guest 是临时访客 */
+  kind: 'user' | 'guest';
+  username: string;
   login: string;
   name: string;
   avatar: string;
@@ -22,10 +24,24 @@ export interface Me {
   lastSeen: number;
   note: string;
   disabled: boolean;
+  /** 超级管理员：界面上要挡住降权、停用、删除三个操作 */
+  isRoot: boolean;
+  /** 用初始密码登录后，改掉之前挡在改密页 */
+  mustChangePassword: boolean;
+}
+
+export interface IdentityInfo {
+  provider: 'password' | 'github';
+  label: string;
+  createdAt: number;
+  lastUsedAt: number;
 }
 
 export interface AuthConfig {
   github: boolean;
+  /** 关掉之后，没绑过 GitHub 的账号不能用它登录 */
+  githubSignup: boolean;
+  password: boolean;
   needsBootstrap: boolean;
   guestEnabled: boolean;
 }
@@ -33,10 +49,12 @@ export interface AuthConfig {
 interface AuthValue {
   me: Me | null;
   caps: Set<Capability>;
+  identities: IdentityInfo[];
   config: AuthConfig | null;
   loading: boolean;
   /** 有没有这项能力。没登录时恒为 false */
   can: (cap: Capability) => boolean;
+  loginWithPassword: (username: string, password: string) => Promise<void>;
   loginAsGuest: (label?: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -47,6 +65,7 @@ const Ctx = createContext<AuthValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [caps, setCaps] = useState<Set<Capability>>(new Set());
+  const [identities, setIdentities] = useState<IdentityInfo[]>([]);
   const [config, setConfig] = useState<AuthConfig | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -66,16 +85,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const data = (await meRes.json()) as {
           user: Me | null;
           capabilities: Capability[];
+          identities: IdentityInfo[];
         };
         setMe(data.user);
         setCaps(new Set(data.capabilities));
+        setIdentities(data.identities ?? []);
       } else {
         setMe(null);
         setCaps(new Set());
+        setIdentities([]);
       }
     } catch {
       setMe(null);
       setCaps(new Set());
+      setIdentities([]);
     } finally {
       setLoading(false);
     }
@@ -84,6 +107,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  /*
+   * 服务端在权限变更时推 auth-refresh。
+   *
+   * 没有这条的话，管理员改完某人的角色，那个人手里的按钮要等到他自己刷新
+   * 才对得上 —— 被收走的能力点了才发现 403，新给的能力则完全看不见。
+   * 权限是服务端说了算的东西，它变了就该由服务端来告诉前端。
+   */
+  useEffect(() => {
+    const onAuthChanged = () => void refresh();
+    window.addEventListener('sonar:auth-refresh', onAuthChanged);
+    return () => window.removeEventListener('sonar:auth-refresh', onAuthChanged);
+  }, [refresh]);
+
+  const loginWithPassword = useCallback(
+    async (username: string, password: string) => {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: '登录失败' }));
+        throw new Error(body.error ?? '登录失败');
+      }
+      // 换人登录了，上一个人的机器列表缓存（含 IP）不能留给他看
+      clearLiveCache();
+      await refresh();
+    },
+    [refresh],
+  );
 
   const loginAsGuest = useCallback(
     async (label?: string) => {
@@ -116,8 +171,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const can = useCallback((cap: Capability) => caps.has(cap), [caps]);
 
   const value = useMemo<AuthValue>(
-    () => ({ me, caps, config, loading, can, loginAsGuest, logout, refresh }),
-    [me, caps, config, loading, can, loginAsGuest, logout, refresh],
+    () => ({
+      me, caps, identities, config, loading, can,
+      loginWithPassword, loginAsGuest, logout, refresh,
+    }),
+    [me, caps, identities, config, loading, can, loginWithPassword, loginAsGuest, logout, refresh],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

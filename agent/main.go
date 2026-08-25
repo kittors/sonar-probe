@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -30,13 +31,16 @@ type config struct {
 	enforce  bool
 	allow    []string
 	once     bool
+	sshKeys  bool
+	stateDir string
+	secret   string
 }
 
 func main() {
 	var (
-		panel    = flag.String("panel", envOr("SONAR_PANEL", "http://127.0.0.1:8787"), "面板地址")
-		nodeID   = flag.String("id", envOr("SONAR_NODE_ID", ""), "节点 ID，需与面板登记一致")
-		name     = flag.String("name", envOr("SONAR_NODE_NAME", ""), "面板上显示的名字，留空则用主机名")
+		panel  = flag.String("panel", envOr("SONAR_PANEL", "http://127.0.0.1:8787"), "面板地址")
+		nodeID = flag.String("id", envOr("SONAR_NODE_ID", ""), "节点 ID，需与面板登记一致")
+		name   = flag.String("name", envOr("SONAR_NODE_NAME", ""), "面板上显示的名字，留空则用主机名")
 		// 这几项采集不到 —— 机房位置和厂商是账务信息，机器自己并不知道
 		country  = flag.String("country", envOr("SONAR_NODE_COUNTRY", ""), "两位国家代码，如 HK")
 		region   = flag.String("region", envOr("SONAR_NODE_REGION", ""), "地区名，如 Hong Kong")
@@ -47,6 +51,17 @@ func main() {
 		enforce  = flag.Bool("enforce", false, "允许真正修改防火墙。不加这个参数时封禁指令只会打印不会执行")
 		allow    = flag.String("allow", envOr("SONAR_ALLOWLIST", ""), "额外的免封白名单，逗号分隔，支持 CIDR")
 		once     = flag.Bool("once", false, "只采集一次并打印结果，用于排查采集是否正常")
+		/*
+		 * SSH 密钥的读和写是分开的两件事，所以是两个概念而不是一个开关：
+		 *
+		 *   读（上报实况）—— 一直开着，零风险，只读几个文件
+		 *   写（增删 authorized_keys）—— 由 -ssh-keys 控制，**默认关闭**
+		 *
+		 * 不加这个参数时，面板下发的密钥指令只会打印不会执行，
+		 * 和 -enforce 对封禁的关系完全一致。
+		 */
+		sshKeys  = flag.Bool("ssh-keys", false, "允许面板远程增删 authorized_keys。不加这个参数时密钥指令只打印不执行")
+		stateDir = flag.String("state-dir", envOr("SONAR_STATE_DIR", "/etc/sonar"), "存放每机密钥的目录")
 	)
 	flag.Parse()
 
@@ -63,6 +78,8 @@ func main() {
 		enforce:  *enforce,
 		allow:    splitCSV(*allow),
 		once:     *once,
+		sshKeys:  *sshKeys,
+		stateDir: *stateDir,
 	}
 
 	collector := newCollector()
@@ -77,11 +94,17 @@ func main() {
 	}
 
 	fw := &Firewall{Enforce: cfg.enforce, Allowlist: cfg.allow}
+	ssh := &SSHApplier{Enable: cfg.sshKeys}
 
 	if cfg.enforce {
 		log.Printf("⚠️  enforce 已启用：封禁指令会真正写入 nftables")
 	} else {
 		log.Printf("dry-run 模式：封禁指令只会打印，加 -enforce 才会真正执行")
+	}
+	if cfg.sshKeys {
+		log.Printf("⚠️  ssh-keys 已启用：面板可以远程增删本机的 authorized_keys")
+	} else {
+		log.Printf("SSH 密钥为只读：会上报实况，但面板下发的增删指令只打印，加 -ssh-keys 才执行")
 	}
 	if len(cfg.allow) > 0 {
 		log.Printf("白名单：%s", strings.Join(cfg.allow, ", "))
@@ -90,12 +113,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := register(ctx, cfg, collector); err != nil {
+	// 先读本地缓存的密钥，注册成功后会被换发的新值覆盖
+	cfg.secret = loadSecret(cfg.stateDir)
+	if err := register(ctx, &cfg, collector); err != nil {
 		log.Printf("注册失败（将继续尝试上报）：%v", err)
 	}
 
 	ticker := time.NewTicker(cfg.interval)
 	defer ticker.Stop()
+
+	/*
+	 * 到期清理独立于上报节奏，也独立于面板。
+	 *
+	 * 面板挂了、网络断了、agent 与面板永久失联，临时授权照样按时失效 ——
+	 * 和封禁把 TTL 交给 nftables 内核是同一个道理：绝不能出现
+	 * "面板没了，临时权限变成永久"。
+	 */
+	pruner := time.NewTicker(10 * time.Minute)
+	defer pruner.Stop()
 
 	log.Printf("sonar-agent v%s 已启动，上报到 %s，间隔 %s", version, cfg.panel, cfg.interval)
 
@@ -104,6 +139,12 @@ func main() {
 		case <-ctx.Done():
 			log.Println("收到退出信号，停止上报")
 			return
+
+		case <-pruner.C:
+			if n := ssh.pruneExpired(); n > 0 {
+				log.Printf("清理了 %d 条已过期的 SSH 授权", n)
+			}
+
 		case <-ticker.C:
 			cmds, err := reportOnce(ctx, cfg, collector)
 			if err != nil {
@@ -112,13 +153,56 @@ func main() {
 				continue
 			}
 			for _, cmd := range cmds {
-				res := fw.Apply(cmd)
-				log.Printf("指令 %s(%s) → skipped=%v ok=%v\n%s", cmd.Kind, cmd.Target, res.Skipped, res.OK, res.Output)
+				var res CommandResult
+				switch cmd.Kind {
+				case "ssh_grant", "ssh_revoke":
+					res = ssh.Apply(cmd)
+				default:
+					res = fw.Apply(cmd)
+				}
+				log.Printf("指令 %s → skipped=%v ok=%v\n%s", cmd.Kind, res.Skipped, res.OK, res.Output)
 				if err := ackCommand(ctx, cfg, res); err != nil {
 					log.Printf("回执失败：%v", err)
 				}
 			}
 		}
+	}
+}
+
+// —————————————————————————————————————————————————————————
+// 每机密钥
+// —————————————————————————————————————————————————————————
+
+/*
+面板的 SONAR_AGENT_TOKEN 是全机队共享的，任何一台机器上都读得到。
+在"只上报数据"的年代这不算致命，但通道能反向下发密钥变更之后，同一个 token
+让任何一台被攻破的机器可以拉取别台机器的待办指令、甚至替它们发回执 ——
+后者会让面板显示一个虚假的"已撤销"，而那把钥匙还在机器上。
+
+所以注册时面板会换发一把只属于这台机器的密钥，落盘 0600，之后上报带上它。
+拿不到密钥的 agent 一切照旧，只是收不到指令 —— 这道闸门让升级是自愿且可回滚的。
+*/
+
+func secretPath(dir string) string { return filepath.Join(dir, "agent.secret") }
+
+func loadSecret(dir string) string {
+	data, err := os.ReadFile(secretPath(dir))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func saveSecret(dir, secret string) {
+	if secret == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("无法创建状态目录 %s：%v（下发通道将不可用）", dir, err)
+		return
+	}
+	if err := os.WriteFile(secretPath(dir), []byte(secret), 0o600); err != nil {
+		log.Printf("无法保存机器密钥：%v（下发通道将不可用）", err)
 	}
 }
 
@@ -153,7 +237,7 @@ func runOnce(collector Collector) {
 	}
 }
 
-func register(ctx context.Context, cfg config, collector Collector) error {
+func register(ctx context.Context, cfg *config, collector Collector) error {
 	info, err := collector.Static()
 	if err != nil {
 		return err
@@ -169,9 +253,31 @@ func register(ctx context.Context, cfg config, collector Collector) error {
 	if len(cfg.tags) > 0 {
 		info.Tags = cfg.tags
 	}
+
+	var resp struct {
+		Secret string `json:"secret"`
+	}
 	body := map[string]any{"token": cfg.token, "node": info}
-	return postJSON(ctx, cfg.panel+"/api/agent/register", body, nil)
+	if err := postJSON(ctx, cfg.panel+"/api/agent/register", body, &resp); err != nil {
+		return err
+	}
+
+	// 面板每次注册都换发一把新密钥，落盘后下一拍上报就能拿到指令了
+	if resp.Secret != "" {
+		cfg.secret = resp.Secret
+		saveSecret(cfg.stateDir, resp.Secret)
+	}
+	return nil
 }
+
+// sshFactsInterval 控制多久采一次 SSH 实况。
+//
+// 不跟着每拍走：指标是 2 秒一次，而 authorized_keys 几天都不会变一次，
+// 每拍都去遍历所有用户的家目录纯属浪费。一分钟一次对"删除前确认实况新鲜度"
+// 已经足够（面板那边的过期阈值是 10 分钟）。
+const sshFactsInterval = time.Minute
+
+var lastSSHFacts time.Time
 
 // reportOnce 上报一拍，返回面板下发的待执行指令。
 func reportOnce(ctx context.Context, cfg config, collector Collector) ([]Command, error) {
@@ -184,9 +290,20 @@ func reportOnce(ctx context.Context, cfg config, collector Collector) ([]Command
 	payload := Report{
 		NodeID:   cfg.nodeID,
 		Token:    cfg.token,
+		Secret:   cfg.secret,
 		Metric:   m,
 		Services: collector.Services(),
 		Peers:    collector.Peers(),
+	}
+
+	if time.Since(lastSSHFacts) >= sshFactsInterval {
+		facts := collectSSHFacts()
+		// 采不到就整块省略 —— 面板据此区分"没有钥匙"和"这个平台采不到"，
+		// 后者绝不能显示成 0 把，那是最危险的误判
+		if facts.SSHDVersion != "" || len(facts.Keys) > 0 || len(facts.HostKeys) > 0 {
+			payload.SSH = &facts
+			lastSSHFacts = time.Now()
+		}
 	}
 
 	var resp struct {
@@ -202,6 +319,7 @@ func ackCommand(ctx context.Context, cfg config, res CommandResult) error {
 	return postJSON(ctx, cfg.panel+"/api/agent/ack", map[string]any{
 		"nodeId": cfg.nodeID,
 		"token":  cfg.token,
+		"secret": cfg.secret,
 		"result": res,
 	}, nil)
 }

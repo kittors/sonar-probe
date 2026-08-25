@@ -453,12 +453,21 @@ export function Alert({
   children,
   icon,
 }: {
-  tone?: 'danger' | 'warn' | 'info';
+  tone?: 'danger' | 'warn' | 'info' | 'success';
   title?: string;
   children?: ReactNode;
   icon?: ReactNode;
 }) {
-  const fallback = tone === 'info' ? <IconInfo size={14} /> : <IconAlert size={14} />;
+  // success 用对勾，info 用信息图标，其余（危险、警告）用感叹号。
+  // 拿感叹号去说"密码已更新"会让人以为出了事
+  const fallback =
+    tone === 'success' ? (
+      <IconCheck size={14} />
+    ) : tone === 'info' ? (
+      <IconInfo size={14} />
+    ) : (
+      <IconAlert size={14} />
+    );
   return (
     <div className="ds-alert" data-tone={tone} role={tone === 'danger' ? 'alert' : undefined}>
       <span className="ds-alert-icon">{icon ?? fallback}</span>

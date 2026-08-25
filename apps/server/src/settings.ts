@@ -139,6 +139,20 @@ export interface Settings {
   metricRetentionHours: number;
   /** 审计日志保留多少天。0 表示永久保留 */
   auditRetentionDays: number;
+
+  // —— SSH
+  /**
+   * SSH 授权是否需要第二个人审批。
+   *
+   * 开着时，没有 ssh:approve 的人发起的授权只是一条申请，不生成命令也不下发 ——
+   * 否则审批就只是多点一次鼠标。单人部署可以关掉，但要清楚关掉意味着
+   * 一个有 ssh:grant 的人可以自己给自己开任意机器的门。
+   */
+  sshRequireApproval: boolean;
+  /** SSH 授权默认有效期天数。0 表示默认永久 */
+  sshDefaultTtlDays: number;
+  /** 授权到期前几天开始提醒 */
+  sshExpiryWarnDays: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -169,6 +183,16 @@ export const DEFAULT_SETTINGS: Settings = {
 
   metricRetentionHours: 26,
   auditRetentionDays: 90,
+
+  /*
+   * 审批默认关闭。
+   *
+   * 绝大多数 Sonar 部署是一个人管自己的几台机器，默认开着会让他每次授权
+   * 都卡在一个永远等不到第二个人的申请上。团队场景在设置页里显式打开。
+   */
+  sshRequireApproval: false,
+  sshDefaultTtlDays: 0,
+  sshExpiryWarnDays: 3,
 };
 
 // ————————————————————————————————————————————————————————
@@ -248,6 +272,10 @@ export function sanitizeSettings(patch: Partial<Settings>, base: Settings = DEFA
 
     metricRetentionHours: clampNum(p.metricRetentionHours, base.metricRetentionHours, 2, 720),
     auditRetentionDays: clampNum(p.auditRetentionDays, base.auditRetentionDays, 0, 3650),
+
+    sshRequireApproval: bool(p.sshRequireApproval, base.sshRequireApproval),
+    sshDefaultTtlDays: clampNum(p.sshDefaultTtlDays, base.sshDefaultTtlDays, 0, 3650),
+    sshExpiryWarnDays: clampNum(p.sshExpiryWarnDays, base.sshExpiryWarnDays, 1, 90),
   };
 }
 

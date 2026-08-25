@@ -172,6 +172,117 @@ export interface BlockPreflight {
   matchedGuards: string[];
 }
 
+// ————————————————————————————————————————————————————————
+// SSH
+// ————————————————————————————————————————————————————————
+
+/** 一把登记在册的公钥。私钥永远不经过面板。 */
+export interface SshKey {
+  id: string;
+  ownerUserId: string;
+  ownerName: string;
+  label: string;
+  keyType: string;
+  /** 公钥原文。生成命令时要用，所以这一份必须存 */
+  publicKey: string;
+  fingerprint: string;
+  bits: number;
+  /** manual = 手工粘贴，github = 从 github.com/<login>.keys 导入 */
+  source: 'manual' | 'github';
+  createdAt: number;
+  lastUsedAt: number;
+  disabled: boolean;
+  /** 这把钥匙目前开着几台机器 */
+  grantCount: number;
+}
+
+export type GrantState = 'pending' | 'active' | 'drifted' | 'revoked' | 'failed';
+export type GrantRequestState = 'pending_approval' | 'approved' | 'rejected';
+
+/** 一条授权：谁的哪把钥匙，开哪台机器的哪个账号。 */
+export interface SshGrant {
+  id: string;
+  nodeId: string;
+  nodeName: string;
+  keyId: string;
+  keyFingerprint: string;
+  keyLabel: string;
+  ownerUserId: string;
+  ownerName: string;
+  remoteUser: string;
+  state: GrantState;
+  requestState: GrantRequestState;
+  /** 0 表示永久 */
+  expiresAt: number;
+  method: 'command' | 'agent';
+  requestedBy: string;
+  grantedBy: string;
+  grantedAt: number;
+  approvedBy: string;
+  approvedAt: number;
+  rejectReason: string;
+  /** 机器实况里第一次看到它的时刻。只有它非零才算真的生效 */
+  appliedAt: number;
+  revokedBy: string;
+  revokedAt: number;
+  note: string;
+}
+
+/** 一台机器怎么连。前半段人可以改，后半段由 agent 上报。 */
+export interface SshEndpoint {
+  nodeId: string;
+  nodeName: string;
+  alias: string;
+  /** 空串表示回落到 nodes.ip */
+  hostname: string;
+  /** 实际生效的地址，已处理过回落 */
+  effectiveHostname: string;
+  port: number;
+  defaultUser: string;
+  proxyJump: string;
+  identityFile: string;
+  // —— agent 上报，只读
+  hostKeys: Array<{ type: string; blob: string; fingerprint: string }>;
+  sshdVersion: string;
+  sshdPort: number;
+  /** null 表示采不到 */
+  passwordAuth: boolean | null;
+  permitRootLogin: string;
+  observedAt: number;
+  /** 实况是不是已经过期到不能用来做删除决策 */
+  factsStale: boolean;
+}
+
+/**
+ * 对账：面板记录 vs 机器实况。
+ *
+ * unmanaged 那一格是这整套东西最有价值的部分 —— 它回答"这台机器上有几把
+ * 我不知道来路的钥匙"，而今天没有任何工具会告诉你这件事。
+ */
+export interface SshDrift {
+  nodeId: string;
+  nodeName: string;
+  remoteUser: string;
+  fingerprint: string;
+  keyType: string;
+  comment: string;
+  /** managed = 带 sonar: 前缀，是我们装的 */
+  managed: boolean;
+  /** 面板认不认识这把钥匙 */
+  known: boolean;
+  ownerName: string;
+  seenAt: number;
+}
+
+/** 授权/撤销前的预检结果，形态与封禁那边一致。 */
+export interface SshPreflightResult {
+  allowed: boolean;
+  blockers: string[];
+  warnings: string[];
+  /** 将要执行的命令，落库存证并展示给人看 */
+  commands: string[];
+}
+
 export interface EventLog {
   id: string;
   nodeId: string | null;
@@ -209,4 +320,13 @@ export type ServerMessage =
   | { type: 'tick'; nodes: NodeState[]; ts: number }
   | { type: 'event'; event: EventLog }
   | { type: 'block'; rule: BlockRule }
-  | { type: 'settings'; settings: PublicSettings };
+  | { type: 'settings'; settings: PublicSettings }
+  /**
+   * 你的权限刚刚被改了，去重新拉一次 /api/me。
+   *
+   * 不把新的能力集直接推过来，是因为这条消息的接收者是"被改的那个人"，
+   * 而改动可能包含停用账号 —— 那时该发生的是他被登出，不是他收到一份空权限
+   * 继续留在页面上。让前端走一次正常的 /api/me，登出、降权、提权三种结果
+   * 都由同一条已有的路径处理。
+   */
+  | { type: 'auth-refresh' };

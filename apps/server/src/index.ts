@@ -44,45 +44,118 @@ import {
 } from './store.js';
 import {
   ALL_CAPABILITIES,
+  CAPABILITIES,
+  checkEscalation,
   groupedCapabilities,
-  ROLE_LABEL,
-  resolveCapabilities,
   type Capability,
   type Role,
 } from './permissions.js';
 import {
+  capabilitiesFor,
+  createRole,
+  deleteRole,
+  ensureSystemRoles,
+  getRole,
+  listRoles,
+  roleUsage,
+  RoleError,
+  updateRole,
+} from './roles.js';
+import {
   activeAdminCount,
   audit,
+  authenticatePassword,
+  AuthError,
+  changePassword,
   consumeState,
   cookieName,
   cookieOptions,
   createGuest,
   createSession,
+  createUser,
+  deleteUser,
+  ensureRootAdmin,
   exchangeGithubCode,
   githubAuthorizeUrl,
   githubConfig,
   githubEnabled,
+  githubSignupEnabled,
   hasAnyAdmin,
   issueState,
+  linkGithub,
   listAudit,
   listOnline,
   listSessions,
   listUsers,
   loadSession,
   pruneSessions,
+  resetPassword,
   revokeSession,
   revokeUserSessions,
   touchSession,
   updateUser,
   upsertGithubUser,
+  userIdentities,
   visitorSummary,
   type AuthContext,
 } from './auth.js';
+import {
+  IdentityError,
+  listIdentities,
+  migrateLegacyGithubIdentities,
+  unbindIdentity,
+  type Provider,
+} from './identities.js';
+import {
+  SshKeyError,
+  grantCommands,
+  grantComment,
+  parsePublicKey,
+  preflightRevoke,
+  preflightGrant,
+  revokeCommands,
+} from './ssh.js';
+import { configSnippet, knownHostsEntries } from './ssh-config.js';
+import {
+  SshStoreError,
+  addKey,
+  approveGrant,
+  createGrant,
+  deleteKey,
+  ensureEndpoint,
+  expireGrants,
+  getEndpoint,
+  getGrant,
+  getKey,
+  grantsOfUser,
+  hostFacts,
+  ingestSshFacts,
+  listDrift,
+  listEndpoints,
+  listGrants,
+  listKeys,
+  markGrantRevoked,
+  markGrantFailed,
+  rejectGrant,
+  todayStamp,
+  updateEndpoint,
+  updateKey,
+  type SshFactsInput,
+} from './ssh-store.js';
+import {
+  ack as ackCommand,
+  claimFor,
+  enqueue,
+  listCommands,
+  pruneCommands,
+} from './commands.js';
 import {
   agentIngestEnabled,
   agentNodeIds,
   agentTokenValid,
   ingestReport,
+  issueNodeSecret,
+  nodeSecretValid,
   registerAgentNode,
   type AgentNodeInfo,
   type AgentReport,
@@ -237,28 +310,37 @@ if (SERVE_STATIC) {
  * 未登录时的身份。
  *
  * 不再一刀切拒绝：概览页是公开状态页，谁都能看。
- * 拦不拦得住由每个路由的 requireCap 决定 —— anonymous 只有 node:list，
+ * 拦不拦得住由每个路由的 requireCap 决定 —— anonymous 默认只有 node:list，
  * 所以详情、流量归因、封禁这些自然就进不去。
+ *
+ * caps 每次现算而不是模块加载时算死一份 —— anonymous 现在是 roles 表里的一行，
+ * 管理员随时可以改"公开状态页显示到哪一层"，缓存住的话要重启才生效。
+ * 角色表整份在内存里（roles.ts），这一次查是 Map 取值，不碰数据库。
  */
-const ANONYMOUS: AuthContext = {
-  user: {
-    id: '',
-    kind: 'guest',
-    login: '',
-    name: '未登录访客',
-    avatar: '',
-    email: '',
-    role: 'anonymous',
-    granted: [],
-    revoked: [],
-    disabled: false,
-    createdAt: 0,
-    lastSeen: 0,
-    note: '',
-  },
-  sessionId: '',
-  caps: resolveCapabilities('anonymous'),
-};
+function anonymousContext(): AuthContext {
+  return {
+    user: {
+      id: '',
+      kind: 'guest',
+      username: '',
+      login: '',
+      name: '未登录访客',
+      avatar: '',
+      email: '',
+      role: 'anonymous',
+      granted: [],
+      revoked: [],
+      disabled: false,
+      isRoot: false,
+      mustChangePassword: false,
+      createdAt: 0,
+      lastSeen: 0,
+      note: '',
+    },
+    sessionId: '',
+    caps: capabilitiesFor('anonymous'),
+  };
+}
 
 app.decorateRequest('auth', null);
 
@@ -268,7 +350,7 @@ app.addHook('onRequest', async (req) => {
     touchSession(session.sessionId, session.user.id);
     req.auth = session;
   } else {
-    req.auth = ANONYMOUS;
+    req.auth = anonymousContext();
   }
 });
 
@@ -282,6 +364,20 @@ function ua(req: FastifyRequest): string {
 }
 
 /**
+ * 把能力点列成人话。
+ *
+ * 提权被拒时给的是给人看的解释，不该甩一串 `node:full_ip` 这样的内部标识 ——
+ * 那是代码里的名字，界面上从来没出现过，收到的人无从对照。
+ */
+function listCaps(caps: readonly string[], max = 3): string {
+  const names = caps.map((c) => CAPABILITIES[c as Capability]?.label ?? c);
+  return names.slice(0, max).join('、') + (names.length > max ? ` 等 ${names.length} 项` : '');
+}
+
+/** 被提权守卫拦住时，告诉人下一步该找谁要什么，而不是只说"不行"。 */
+const ESCALATE_HINT = `确实需要这么做的话，请管理员授予「${CAPABILITIES['user:escalate'].label}」。`;
+
+/**
  * 能力守卫。
  *
  * 前端也会按能力隐藏按钮，但那只是不碍眼 —— 真正拦住越权请求的是这里。
@@ -290,6 +386,20 @@ function ua(req: FastifyRequest): string {
 function requireCap(cap: Capability) {
   return async (req: FastifyRequest, reply: FastifyReply) => {
     if (req.auth?.caps.has(cap)) return;
+
+    /*
+     * 权限被降到匿名级，只是因为初始密码还没改（见 auth.ts 的 loadSession）。
+     *
+     * 这一条必须先于下面那句"没有权限"回 —— 否则一个刚被创建的管理员会看到
+     * "你没有权限执行这个操作"，然后去找人要权限，而他缺的根本不是权限。
+     */
+    if (req.auth?.sessionId && req.auth.user.mustChangePassword) {
+      return reply.code(403).send({
+        error: '请先修改初始密码，之后权限才会生效',
+        code: 'password_change_required',
+        required: cap,
+      });
+    }
 
     const anonymous = !req.auth?.sessionId;
 
@@ -410,10 +520,51 @@ function broadcastTo(cap: Capability, msg: ServerMessage): void {
   }
 }
 
+/**
+ * 权限变更后，重算受影响连接的能力集并通知前端刷新。
+ *
+ * 两件事都必须做，少一件都是缺陷：
+ *
+ *   **重算 ctx** —— clients 里存的是连接建立那一刻的权限快照。不重算的话，
+ *   一个刚被收走 node:full_ip 的人，他那条 WebSocket 会继续按旧权限推送
+ *   未打码的地址，直到他自己刷新页面为止。降权在他重连之前是不生效的。
+ *
+ *   **通知前端** —— 前端的按钮显隐来自 /api/me 的那一份 capabilities，
+ *   不告诉它就只有下次整页加载才对得上。
+ *
+ * match 用会话去匹配而不是照着旧 ctx 判断：角色被改名、用户被换角色之后，
+ * 旧 ctx 里的 role 已经不能代表现在的归属了。
+ */
+function refreshClients(match: (ctx: AuthContext) => boolean): void {
+  const payload = JSON.stringify({ type: 'auth-refresh' } satisfies ServerMessage);
+  for (const [ws, ctx] of clients) {
+    if (ws.readyState !== 1) {
+      clients.delete(ws);
+      continue;
+    }
+    if (!match(ctx)) continue;
+
+    // 会话可能已经在这次变更里被吊销（比如停用账号），那就退回匿名权限
+    const fresh = ctx.sessionId ? loadSession(ctx.sessionId) : null;
+    clients.set(ws, fresh ?? anonymousContext());
+    ws.send(payload);
+  }
+}
+
+/** 某个角色的能力集变了 —— 所有挂着它的人都要重算。 */
+function pushAuthRefresh(roleId: string): void {
+  refreshClients((ctx) => ctx.user.role === roleId);
+}
+
+/** 某个人的角色或个人授予变了。 */
+function pushAuthRefreshTo(userId: string): void {
+  refreshClients((ctx) => ctx.user.id === userId);
+}
+
 app.get('/ws', { websocket: true }, (socket, req) => {
   // 匿名也能连：概览页是公开状态页，实时刷新对未登录的人一样生效。
   // 推什么由 caps 决定，anonymous 拿到的节点数据是脱敏过的。
-  const ctx = loadSession(req.cookies[cookieName]) ?? ANONYMOUS;
+  const ctx = loadSession(req.cookies[cookieName]) ?? anonymousContext();
 
   clients.set(socket, ctx);
   // 口径先于数据发出去：晚一步的话客户端会先拿旧口径渲染一次快照，
@@ -461,17 +612,107 @@ app.get('/ws', { websocket: true }, (socket, req) => {
 
 app.get('/api/auth/config', async () => ({
   github: githubEnabled(),
+  githubSignup: githubSignupEnabled(),
+  // 密码登录不需要任何外部配置，永远可用 —— 它是 GitHub 没配好时的唯一入口
+  password: true,
   needsBootstrap: !hasAnyAdmin(),
   guestEnabled: process.env.SONAR_DISABLE_GUEST !== '1',
 }));
 
-app.get<{ Querystring: { redirect?: string } }>('/api/auth/github', async (req, reply) => {
-  if (!githubEnabled()) {
-    return reply.code(503).send({ error: 'GitHub 登录未配置，请在服务端设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET' });
-  }
-  const state = issueState(req.query.redirect ?? '/');
-  return reply.redirect(githubAuthorizeUrl(state));
-});
+/**
+ * 用户名密码登录。
+ *
+ * 限流按 IP 和账号两个维度分别算：
+ *   只按 IP 拦不住撞库（一个 IP 换着账号试），
+ *   只按账号拦不住分布式爆破，但能防住"针对管理员这一个账号"的定点爆破 ——
+ *   而后者恰恰是自托管面板最常见的攻击形态。
+ */
+app.post<{ Body: { username?: string; password?: string } }>(
+  '/api/auth/login',
+  async (req, reply) => {
+    const username = String(req.body?.username ?? '').trim();
+    const password = String(req.body?.password ?? '');
+
+    if (!consume(`login:ip:${ip(req)}`, 10, 600_000)) {
+      return reply
+        .code(429)
+        .header('Retry-After', String(retryAfter(`login:ip:${ip(req)}`, 600_000)))
+        .send({ error: '尝试过于频繁，请十分钟后再试' });
+    }
+    if (username && !consume(`login:user:${username.toLowerCase()}`, 5, 600_000)) {
+      return reply
+        .code(429)
+        .header('Retry-After', String(retryAfter(`login:user:${username.toLowerCase()}`, 600_000)))
+        .send({ error: '这个账号尝试过于频繁，请十分钟后再试' });
+    }
+
+    if (!username || !password) {
+      return reply.code(400).send({ error: '请填写用户名和密码' });
+    }
+
+    let user;
+    try {
+      user = await authenticatePassword(username, password);
+    } catch (err) {
+      const status = err instanceof AuthError ? err.status : 401;
+      /*
+       * 登录失败也要落审计。
+       *
+       * userId 留空 —— 这时还没有确认身份，把用户猜到的那个名字当成 user_id
+       * 写进去，日后查"这个账号做过什么"就会混进一堆不是他做的事。
+       * 名字放在 detail 里，够用来看出有人在爆破谁。
+       */
+      audit({
+        userId: '',
+        sessionId: '',
+        action: 'login.failed',
+        target: 'password',
+        detail: `用户名 ${username}`,
+        ip: ip(req),
+        userAgent: ua(req),
+      });
+      return reply.code(status).send({ error: err instanceof Error ? err.message : '登录失败' });
+    }
+
+    const sid = createSession(user.id, ip(req), ua(req));
+    audit({
+      userId: user.id,
+      sessionId: sid,
+      action: 'login',
+      target: 'password',
+      detail: `以 ${getRole(user.role)?.name ?? user.role} 身份登录`,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+
+    reply.setCookie(cookieName, sid, cookieOptions(SECURE_COOKIE));
+    return {
+      user: publicUser(user),
+      capabilities: [...capabilitiesFor(user.role, user.granted, user.revoked)],
+      mustChangePassword: user.mustChangePassword,
+    };
+  },
+);
+
+app.get<{ Querystring: { redirect?: string; mode?: string } }>(
+  '/api/auth/github',
+  async (req, reply) => {
+    if (!githubEnabled()) {
+      return reply.code(503).send({ error: 'GitHub 登录未配置，请在服务端设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET' });
+    }
+    // 绑定模式必须已经登录 —— 否则这条路等价于一个不受 signup 开关约束的注册入口
+    const link = req.query.mode === 'link';
+    if (link && !req.auth?.sessionId) {
+      return reply.code(401).send({ error: '请先登录再绑定 GitHub' });
+    }
+    const state = issueState(
+      req.query.redirect ?? '/',
+      link ? 'link' : 'login',
+      link ? req.auth!.user.id : '',
+    );
+    return reply.redirect(githubAuthorizeUrl(state));
+  },
+);
 
 app.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
   '/api/auth/github/callback',
@@ -487,7 +728,39 @@ app.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
 
     try {
       const profile = await exchangeGithubCode(code);
-      const { user, firstAdmin } = upsertGithubUser(profile);
+
+      // —— 绑定：把这个 GitHub 挂到当前账号上，不新建、不换会话
+      if (checked.mode === 'link') {
+        /*
+         * 发起绑定的人必须还是当前登录的人。
+         *
+         * state 里存了 userId，回来时和会话比一次。中间换了账号（比如在另一个
+         * 标签页登出再登入别人）就拒绝 —— 否则 A 发起的绑定会落到 B 头上，
+         * 而 B 从此可以用 A 的 GitHub 登录。
+         */
+        if (!req.auth?.sessionId || req.auth.user.id !== checked.userId) {
+          return reply.redirect(`${PUBLIC_URL}/settings?link_error=session_changed`);
+        }
+        try {
+          linkGithub(checked.userId, profile);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : '绑定失败';
+          return reply.redirect(`${PUBLIC_URL}/settings?link_error=${encodeURIComponent(msg)}`);
+        }
+        audit({
+          userId: checked.userId,
+          sessionId: req.auth.sessionId,
+          action: 'identity.link',
+          target: 'github',
+          detail: profile.login,
+          ip: ip(req),
+          userAgent: ua(req),
+        });
+        return reply.redirect(`${PUBLIC_URL}/settings?linked=github`);
+      }
+
+      // —— 登录
+      const { user, created } = upsertGithubUser(profile);
 
       if (user.disabled) {
         return reply.redirect(`${PUBLIC_URL}/?login_error=disabled`);
@@ -499,17 +772,23 @@ app.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
         sessionId: sid,
         action: 'login',
         target: 'github',
-        detail: firstAdmin ? '首次登录，已自动成为管理员' : `以 ${ROLE_LABEL[user.role]} 身份登录`,
+        detail: created
+          ? '首次通过 GitHub 登录，已创建账号'
+          : `以 ${getRole(user.role)?.name ?? user.role} 身份登录`,
         ip: ip(req),
         userAgent: ua(req),
       });
-      if (firstAdmin) {
-        logEvent(null, 'warn', 'auth', `${user.login} 首次通过 GitHub 登录，已成为管理员`);
+      if (created) {
+        logEvent(null, 'info', 'auth', `${user.login} 首次通过 GitHub 登录，已创建账号（${getRole(user.role)?.name ?? user.role}）`);
       }
 
       reply.setCookie(cookieName, sid, cookieOptions(SECURE_COOKIE));
       return reply.redirect(`${PUBLIC_URL}${checked.redirect}`);
     } catch (err) {
+      // 未授权的 GitHub 账号（关掉了自助注册）要给出可读的理由，不能一律 oauth_failed
+      if (err instanceof AuthError) {
+        return reply.redirect(`${PUBLIC_URL}/?login_error=${encodeURIComponent(err.message)}`);
+      }
       app.log.error({ err }, 'github oauth failed');
       return reply.redirect(`${PUBLIC_URL}/?login_error=oauth_failed`);
     }
@@ -546,7 +825,7 @@ app.post<{ Body: { label?: string } }>('/api/auth/guest', async (req, reply) => 
   logEvent(null, 'info', 'auth', `访客 ${user.name} 进入面板`);
 
   reply.setCookie(cookieName, sid, cookieOptions(SECURE_COOKIE));
-  return { user: publicUser(user), capabilities: [...resolveCapabilities(user.role, user.granted, user.revoked)] };
+  return { user: publicUser(user), capabilities: [...capabilitiesFor(user.role, user.granted, user.revoked)] };
 });
 
 app.post('/api/auth/logout', async (req, reply) => {
@@ -565,22 +844,28 @@ app.post('/api/auth/logout', async (req, reply) => {
 });
 
 function publicUser(u: {
-  id: string; kind: string; login: string; name: string; avatar: string;
+  id: string; kind: string; username: string; login: string; name: string; avatar: string;
   role: Role; createdAt: number; lastSeen: number; note: string; email: string; disabled: boolean;
+  isRoot: boolean; mustChangePassword: boolean;
 }) {
   return {
     id: u.id,
     kind: u.kind,
+    username: u.username,
     login: u.login,
     name: u.name,
     avatar: u.avatar,
     email: u.email,
     role: u.role,
-    roleLabel: ROLE_LABEL[u.role],
+    // 角色可能已被删除，回落到 id 而不是 undefined —— 界面上显示一个原始 id
+    // 至少还能看出问题在哪，显示空白只会让人以为这个人没有角色
+    roleLabel: getRole(u.role)?.name ?? u.role,
     createdAt: u.createdAt,
     lastSeen: u.lastSeen,
     note: u.note,
     disabled: u.disabled,
+    isRoot: u.isRoot,
+    mustChangePassword: u.mustChangePassword,
   };
 }
 
@@ -590,16 +875,113 @@ app.get('/api/me', async (req, reply) => {
   if (!req.auth?.sessionId) {
     return reply.send({
       user: null,
-      capabilities: [...ANONYMOUS.caps],
+      capabilities: [...anonymousContext().caps],
+      identities: [],
       sessionId: null,
     });
   }
   return reply.send({
     user: publicUser(req.auth.user),
     capabilities: [...req.auth.caps],
+    identities: userIdentities(req.auth.user.id),
     sessionId: req.auth.sessionId,
   });
 });
+
+// ————————————————————————————————————————————————————————
+// 个人设置
+// ————————————————————————————————————————————————————————
+
+/**
+ * 这一组接口不挂 requireCap，只要求"是登录着的正式用户"。
+ *
+ * 改自己的密码、绑自己的 GitHub 不该需要任何被授予的能力 —— 那会导致一个
+ * 被收走全部权限的人连密码都改不了。访客排除在外：那是临时身份，没有可维护的凭据。
+ */
+function requireAccount(req: FastifyRequest, reply: FastifyReply): boolean {
+  if (!req.auth?.sessionId) {
+    reply.code(401).send({ error: '请先登录', code: 'unauthenticated' });
+    return false;
+  }
+  if (req.auth.user.kind === 'guest') {
+    reply.code(403).send({ error: '访客账号没有可维护的登录凭据' });
+    return false;
+  }
+  return true;
+}
+
+app.patch<{ Body: { name?: string; email?: string } }>('/api/me', async (req, reply) => {
+  if (!requireAccount(req, reply)) return;
+  const updated = updateUser(req.auth!.user.id, {
+    name: req.body?.name === undefined ? undefined : String(req.body.name).slice(0, 40),
+    email: req.body?.email === undefined ? undefined : String(req.body.email).slice(0, 120),
+  });
+  return { user: publicUser(updated!) };
+});
+
+app.post<{ Body: { current?: string; next?: string } }>(
+  '/api/me/password',
+  async (req, reply) => {
+    if (!requireAccount(req, reply)) return;
+
+    // 改密要过 scrypt 两到三次，是个不便宜的操作，别让它变成放大器
+    if (!consume(`pw:${req.auth!.user.id}`, 10, 600_000)) {
+      return reply.code(429).send({ error: '操作过于频繁，请稍后再试' });
+    }
+
+    try {
+      await changePassword(
+        req.auth!.user.id,
+        { current: req.body?.current, next: String(req.body?.next ?? '') },
+        // 留着自己当前这条会话，其余全部踢掉
+        req.auth!.sessionId,
+      );
+    } catch (err) {
+      const status = err instanceof AuthError ? err.status : 400;
+      return reply.code(status).send({ error: err instanceof Error ? err.message : '修改失败' });
+    }
+
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'password.change',
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    return { ok: true };
+  },
+);
+
+app.get('/api/me/identities', async (req, reply) => {
+  if (!requireAccount(req, reply)) return;
+  return { identities: userIdentities(req.auth!.user.id) };
+});
+
+app.delete<{ Params: { provider: string } }>(
+  '/api/me/identities/:provider',
+  async (req, reply) => {
+    if (!requireAccount(req, reply)) return;
+    const provider = req.params.provider as Provider;
+    if (provider !== 'github' && provider !== 'password') {
+      return reply.code(400).send({ error: '不认识的登录方式' });
+    }
+    try {
+      unbindIdentity(req.auth!.user.id, provider);
+    } catch (err) {
+      const status = err instanceof IdentityError ? err.status : 400;
+      return reply.code(status).send({ error: err instanceof Error ? err.message : '解绑失败' });
+    }
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'identity.unlink',
+      target: provider,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    return { ok: true, identities: userIdentities(req.auth!.user.id) };
+  },
+);
 
 // ————————————————————————————————————————————————————————
 // 业务路由
@@ -915,41 +1297,881 @@ app.delete<{ Params: { id: string } }>(
   },
 );
 
+// ————————————————————————————————————————————————————————
+// SSH 管理
+//
+// 面板做的是**凭据分发**和**连接目录**，不做会话代理 —— 不存私钥、不建隧道、
+// 不提供 Web 终端。你的 ssh 连接直连目标机器，一个字节都不经过面板，
+// 所以面板挂了不影响任何人登录。
+// ————————————————————————————————————————————————————————
+
+/** 当前用户能不能动这把钥匙。别人的钥匙只有 ssh:audit 才能碰。 */
+function ownsKeyOr(req: FastifyRequest, key: { ownerUserId: string }): boolean {
+  return key.ownerUserId === req.auth!.user.id || req.auth!.caps.has('ssh:audit');
+}
+
+/** 审批流开着时，非管理员发起的授权是申请；关掉或自己有审批权时直接生效。 */
+function initialRequestState(req: FastifyRequest): 'pending_approval' | 'approved' {
+  if (!getSettings().sshRequireApproval) return 'approved';
+  return req.auth!.caps.has('ssh:approve') ? 'approved' : 'pending_approval';
+}
+
+// —— 我的钥匙
+
+app.get('/api/ssh/keys', { preHandler: requireCap('ssh:keys') }, async (req) => {
+  // 有 ssh:audit 的人看全部，其他人只看自己的
+  const all = req.auth!.caps.has('ssh:audit');
+  return listKeys(all ? undefined : req.auth!.user.id);
+});
+
+app.post<{ Body: { publicKey?: string; label?: string } }>(
+  '/api/ssh/keys',
+  { preHandler: requireCap('ssh:keys') },
+  async (req, reply) => {
+    try {
+      const key = addKey({
+        ownerUserId: req.auth!.user.id,
+        publicKey: String(req.body?.publicKey ?? ''),
+        label: req.body?.label,
+      });
+      audit({
+        userId: req.auth!.user.id,
+        sessionId: req.auth!.sessionId,
+        action: 'ssh.key.add',
+        target: key.fingerprint,
+        detail: `${key.keyType} ${key.label}`,
+        ip: ip(req),
+        userAgent: ua(req),
+      });
+      return reply.code(201).send(key);
+    } catch (err) {
+      return sshError(reply, err);
+    }
+  },
+);
+
+/**
+ * 从 GitHub 导入公钥。
+ *
+ * `https://github.com/<login>.keys` 是公开端点，不需要 token —— 你已经用
+ * GitHub 登录了，这是那次登录的免费红利，没道理还让人手工去复制粘贴。
+ */
+app.post('/api/ssh/keys/import/github', { preHandler: requireCap('ssh:keys') }, async (req, reply) => {
+  const login = githubLoginOf(req.auth!.user.id);
+  if (!login) {
+    return reply.code(400).send({ error: '这个账号还没有绑定 GitHub，先去个人设置里绑定' });
+  }
+
+  let text: string;
+  try {
+    const res = await fetch(`https://github.com/${encodeURIComponent(login)}.keys`, {
+      headers: { 'User-Agent': 'sonar-panel' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`GitHub 返回 ${res.status}`);
+    text = await res.text();
+  } catch (err) {
+    // 内网部署拿不到就明说，不要装作是用户的问题
+    return reply.code(502).send({
+      error: `拉取 github.com/${login}.keys 失败：${err instanceof Error ? err.message : '网络不可达'}。可以改用手工粘贴`,
+    });
+  }
+
+  const added: string[] = [];
+  const skipped: string[] = [];
+  for (const line of text.split('\n').map((l) => l.trim()).filter(Boolean)) {
+    try {
+      const key = addKey({
+        ownerUserId: req.auth!.user.id,
+        publicKey: line,
+        label: `GitHub · ${login}`,
+        source: 'github',
+      });
+      added.push(key.fingerprint);
+    } catch (err) {
+      skipped.push(err instanceof Error ? err.message : '未知原因');
+    }
+  }
+
+  if (added.length > 0) {
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'ssh.key.import',
+      target: login,
+      detail: `导入 ${added.length} 把`,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+  }
+  return { added: added.length, skipped, keys: listKeys(req.auth!.user.id) };
+});
+
+app.patch<{ Params: { id: string }; Body: { label?: string; disabled?: boolean } }>(
+  '/api/ssh/keys/:id',
+  { preHandler: requireCap('ssh:keys') },
+  async (req, reply) => {
+    const key = getKey(req.params.id);
+    if (!key) return reply.code(404).send({ error: '公钥不存在' });
+    if (!ownsKeyOr(req, key)) return reply.code(403).send({ error: '这不是你的公钥' });
+    try {
+      return updateKey(req.params.id, req.body ?? {});
+    } catch (err) {
+      return sshError(reply, err);
+    }
+  },
+);
+
+app.delete<{ Params: { id: string } }>(
+  '/api/ssh/keys/:id',
+  { preHandler: requireCap('ssh:keys') },
+  async (req, reply) => {
+    const key = getKey(req.params.id);
+    if (!key) return reply.code(404).send({ error: '公钥不存在' });
+    if (!ownsKeyOr(req, key)) return reply.code(403).send({ error: '这不是你的公钥' });
+    try {
+      deleteKey(req.params.id);
+      audit({
+        userId: req.auth!.user.id,
+        sessionId: req.auth!.sessionId,
+        action: 'ssh.key.delete',
+        target: key.fingerprint,
+        ip: ip(req),
+        userAgent: ua(req),
+      });
+      return { ok: true };
+    } catch (err) {
+      return sshError(reply, err);
+    }
+  },
+);
+
+// —— 接入方式与别名
+
+app.get('/api/ssh/endpoints', { preHandler: requireCap('ssh:view') }, async () => listEndpoints());
+
+app.patch<{
+  Params: { id: string };
+  Body: { alias?: string; hostname?: string; port?: number; defaultUser?: string; proxyJump?: string; identityFile?: string };
+}>('/api/ssh/endpoints/:id', { preHandler: requireCap('ssh:endpoint') }, async (req, reply) => {
+  try {
+    const ep = updateEndpoint(req.params.id, req.body ?? {});
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'ssh.endpoint.update',
+      target: req.params.id,
+      detail: JSON.stringify(req.body),
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    return ep;
+  } catch (err) {
+    return sshError(reply, err);
+  }
+});
+
+/**
+ * 生成 ssh_config 片段和 known_hosts。
+ *
+ * known_hosts 那一半是 Sonar 相对 Termius/Tabby 真正的优势：它们装在你本机，
+ * 没法知道目标机器的 host key，只能让你首次连接时盲按一次 yes —— 而那一下
+ * 正是中间人攻击唯一的窗口。Sonar 的 agent 就在目标机器上，指纹是它本地的文件。
+ */
+app.get<{ Querystring: { nodes?: string } }>(
+  '/api/ssh/config',
+  { preHandler: requireCap('ssh:view') },
+  async (req) => {
+    const filter = (req.query.nodes ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    const all = listEndpoints();
+    const picked = filter.length > 0 ? all.filter((e) => filter.includes(e.nodeId)) : all;
+
+    const views = picked
+      // 连不上的机器不该出现在配置里 —— 一个指向空地址的 Host 只会浪费一次超时
+      .filter((e) => e.effectiveHostname)
+      .map((e) => ({
+        nodeId: e.nodeId,
+        alias: e.alias,
+        hostname: e.effectiveHostname,
+        port: e.port,
+        defaultUser: e.defaultUser,
+        proxyJump: e.proxyJump,
+        identityFile: e.identityFile,
+        hostKeys: e.hostKeys.map((k) => ({ type: k.type, blob: k.blob })),
+      }));
+
+    return {
+      config: configSnippet(views, getSettings().panelName),
+      knownHosts: knownHostsEntries(views),
+      count: views.length,
+      /** 有多少台机器还没采到 host key —— 那些仍需首次盲信任 */
+      missingHostKeys: views.filter((v) => v.hostKeys.length === 0).length,
+    };
+  },
+);
+
+// —— 对账
+
+app.get<{ Querystring: { node?: string } }>(
+  '/api/ssh/drift',
+  { preHandler: requireCap('ssh:audit') },
+  async (req) => listDrift(req.query.node),
+);
+
+// —— 授权
+
+app.get<{ Querystring: { node?: string; key?: string; mine?: string } }>(
+  '/api/ssh/grants',
+  { preHandler: requireCap('ssh:view') },
+  async (req) => {
+    // 没有 ssh:audit 的人只看得到自己的授权
+    const scoped = !req.auth!.caps.has('ssh:audit') || req.query.mine === '1';
+    return listGrants({
+      nodeId: req.query.node,
+      keyId: req.query.key,
+      ownerUserId: scoped ? req.auth!.user.id : undefined,
+    });
+  },
+);
+
+/** 预检：不落库，只回答"这一步能不能做、会执行什么"。 */
+app.post<{ Body: { nodeId?: string; keyId?: string; remoteUser?: string; expiresAt?: number } }>(
+  '/api/ssh/grants/preflight',
+  { preHandler: requireCap('ssh:grant') },
+  async (req, reply) => {
+    try {
+      const p = await buildGrantPlan(req, req.body ?? {});
+      return p.preflight;
+    } catch (err) {
+      return sshError(reply, err);
+    }
+  },
+);
+
+app.post<{
+  Body: { nodeId?: string; keyId?: string; remoteUser?: string; expiresAt?: number; note?: string; useAgent?: boolean };
+}>('/api/ssh/grants', { preHandler: requireCap('ssh:grant') }, async (req, reply) => {
+  try {
+    const plan = await buildGrantPlan(req, req.body ?? {});
+    if (!plan.preflight.allowed) {
+      return reply.code(409).send({ error: plan.preflight.blockers.join('；'), preflight: plan.preflight });
+    }
+
+    /*
+     * 只能用自己名下的钥匙发起授权。
+     *
+     * 不堵的话，一个 operator 可以登记一把自己的 key 但把它算在别人头上，
+     * 再给"那个人"授权 —— 他拿到了访问权，而审计日志显示是别人的钥匙装上去的。
+     */
+    if (!ownsKeyOr(req, plan.key)) {
+      return reply.code(403).send({ error: '只能用自己名下的公钥发起授权。代他人授权需要「查看密钥实况」的能力' });
+    }
+
+    const requestState = initialRequestState(req);
+    const useAgent = Boolean(req.body?.useAgent) && req.auth!.caps.has('ssh:remote_apply');
+
+    const grant = createGrant({
+      nodeId: plan.nodeId,
+      keyId: plan.key.id,
+      remoteUser: plan.remoteUser,
+      expiresAt: plan.expiresAt,
+      method: useAgent ? 'agent' : 'command',
+      requestState,
+      requestedBy: req.auth!.user.id,
+      grantedBy: req.auth!.user.id,
+      approvedBy: requestState === 'approved' ? req.auth!.user.id : '',
+      note: req.body?.note,
+    });
+
+    // 待审批的申请不下发，也不给命令 —— 否则审批就只是个摆设
+    if (requestState === 'approved' && useAgent) {
+      dispatchGrant(grant.id, req.auth!.user.name);
+    }
+
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'ssh.grant',
+      target: `${plan.nodeId}:${plan.remoteUser}`,
+      detail: `${plan.key.fingerprint} ${requestState === 'approved' ? '已生效' : '待审批'}${useAgent ? ' 经 agent 下发' : ''}`,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    logEvent(plan.nodeId, 'warn', 'ssh', `${req.auth!.user.name} 授权了 ${plan.key.label} 访问 ${plan.remoteUser}`);
+
+    return reply.code(201).send({
+      grant,
+      preflight: plan.preflight,
+      commands: requestState === 'approved' ? plan.preflight.commands : [],
+    });
+  } catch (err) {
+    return sshError(reply, err);
+  }
+});
+
+app.post<{ Params: { id: string } }>(
+  '/api/ssh/grants/:id/approve',
+  { preHandler: requireCap('ssh:approve') },
+  async (req, reply) => {
+    try {
+      const grant = approveGrant(req.params.id, req.auth!.user.id);
+      if (grant.method === 'agent') dispatchGrant(grant.id, req.auth!.user.name);
+      audit({
+        userId: req.auth!.user.id,
+        sessionId: req.auth!.sessionId,
+        action: 'ssh.grant.approve',
+        target: grant.id,
+        detail: `${grant.nodeName} / ${grant.ownerName}`,
+        ip: ip(req),
+        userAgent: ua(req),
+      });
+      return { grant, commands: grantCommandsFor(grant) };
+    } catch (err) {
+      return sshError(reply, err);
+    }
+  },
+);
+
+app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+  '/api/ssh/grants/:id/reject',
+  { preHandler: requireCap('ssh:approve') },
+  async (req, reply) => {
+    try {
+      const grant = rejectGrant(req.params.id, req.auth!.user.id, req.body?.reason ?? '');
+      audit({
+        userId: req.auth!.user.id,
+        sessionId: req.auth!.sessionId,
+        action: 'ssh.grant.reject',
+        target: grant.id,
+        detail: req.body?.reason ?? '',
+        ip: ip(req),
+        userAgent: ua(req),
+      });
+      return grant;
+    } catch (err) {
+      return sshError(reply, err);
+    }
+  },
+);
+
+/** 重新取一次某条授权的命令文本 —— 人可能关掉了对话框还没来得及执行。 */
+app.get<{ Params: { id: string } }>(
+  '/api/ssh/grants/:id/commands',
+  { preHandler: requireCap('ssh:view') },
+  async (req, reply) => {
+    const grant = getGrant(req.params.id);
+    if (!grant) return reply.code(404).send({ error: '授权不存在' });
+    if (!req.auth!.caps.has('ssh:audit') && grant.ownerUserId !== req.auth!.user.id) {
+      return reply.code(403).send({ error: '这不是你的授权' });
+    }
+    return { commands: grantCommandsFor(grant) };
+  },
+);
+
+app.post<{ Params: { id: string }; Body: { useAgent?: boolean } }>(
+  '/api/ssh/grants/:id/revoke',
+  { preHandler: requireCap('ssh:revoke') },
+  async (req, reply) => {
+    const grant = getGrant(req.params.id);
+    if (!grant) return reply.code(404).send({ error: '授权不存在' });
+
+    const key = getKey(grant.keyId);
+    if (!key) return reply.code(404).send({ error: '公钥已不存在' });
+
+    const facts = hostFacts(grant.nodeId, grant.remoteUser, nodeOnline(grant.nodeId));
+    const pre = preflightRevoke({
+      fingerprint: key.fingerprint,
+      facts,
+      operatorOwnsKey: key.ownerUserId === req.auth!.user.id,
+    });
+    if (!pre.allowed) {
+      return reply.code(409).send({ error: pre.blockers.join('；'), preflight: pre });
+    }
+
+    const commands = revokeCommands(parsePublicKey(key.publicKey), {
+      remoteUser: grant.remoteUser,
+      day: todayStamp(),
+    });
+
+    const useAgent = Boolean(req.body?.useAgent) && req.auth!.caps.has('ssh:remote_apply');
+    if (useAgent) {
+      enqueue({
+        nodeId: grant.nodeId,
+        kind: 'ssh_revoke',
+        payload: { remoteUser: grant.remoteUser, fingerprint: key.fingerprint },
+        preview: commands,
+        operator: req.auth!.user.name,
+        refId: grant.id,
+      });
+    }
+
+    /*
+     * 立刻标记为已撤销。
+     *
+     * 这是面板记录，不是机器状态 —— 机器上那把钥匙要等命令被执行才真的消失。
+     * 界面上会用 drift 视图把两者的差异显示出来，所以这里提前置位不会造成误解：
+     * 没执行的话，下一拍实况上报就会把它显示成"面板已撤销，机器上还在"。
+     */
+    markGrantRevoked(grant.id, req.auth!.user.id);
+
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'ssh.revoke',
+      target: `${grant.nodeId}:${grant.remoteUser}`,
+      detail: `${key.fingerprint}${useAgent ? ' 经 agent 下发' : ' 需手工执行'}`,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    logEvent(grant.nodeId, 'warn', 'ssh', `${req.auth!.user.name} 撤销了 ${key.label} 对 ${grant.remoteUser} 的访问`);
+
+    return { ok: true, commands, preflight: pre, dispatched: useAgent };
+  },
+);
+
+/**
+ * 某个人的全部授权 —— 人员离场时一键列出。
+ *
+ * 这是团队场景里最高频、最容易漏的动作，也是唯一能证明这套系统有价值的时刻。
+ */
+app.get<{ Params: { id: string } }>(
+  '/api/ssh/users/:id/grants',
+  { preHandler: requireCap('ssh:audit') },
+  async (req) => {
+    const grants = grantsOfUser(req.params.id);
+    return {
+      grants,
+      // 按机器分组的撤销命令，agent 离线时人可以照着一台台执行
+      commands: grants.map((g) => {
+        const key = getKey(g.keyId);
+        return {
+          grantId: g.id,
+          nodeId: g.nodeId,
+          nodeName: g.nodeName,
+          remoteUser: g.remoteUser,
+          commands: key
+            ? revokeCommands(parsePublicKey(key.publicKey), { remoteUser: g.remoteUser, day: todayStamp() })
+            : [],
+        };
+      }),
+    };
+  },
+);
+
+/**
+ * 导出：我曾经把哪些钥匙装到了哪些机器上。
+ *
+ * 这个接口存在的理由是**可退出性**：即使哪天不用 Sonar 了，你也能拿着这份清单
+ * 手工收尾，而不是留一堆来历不明的钥匙在机器上。它和远程下发能力是配套的。
+ */
+app.get('/api/ssh/export', { preHandler: requireCap('ssh:audit') }, async () => {
+  const grants = listGrants().filter((g) => g.state !== 'revoked');
+  return {
+    generatedAt: Date.now(),
+    grants: grants.map((g) => {
+      const key = getKey(g.keyId);
+      return {
+        node: g.nodeId,
+        nodeName: g.nodeName,
+        remoteUser: g.remoteUser,
+        owner: g.ownerName,
+        fingerprint: g.keyFingerprint,
+        state: g.state,
+        grantedAt: g.grantedAt,
+        expiresAt: g.expiresAt,
+        revokeCommands: key
+          ? revokeCommands(parsePublicKey(key.publicKey), { remoteUser: g.remoteUser, day: todayStamp() })
+          : [],
+      };
+    }),
+  };
+});
+
+// —— 下发队列
+
+app.get<{ Querystring: { node?: string } }>(
+  '/api/ssh/commands',
+  { preHandler: requireCap('ssh:audit') },
+  async (req) => listCommands(req.query.node),
+);
+
+// ————————————————————————————————————————————————————————
+// SSH 辅助
+// ————————————————————————————————————————————————————————
+
+function sshError(reply: FastifyReply, err: unknown) {
+  const status = err instanceof SshStoreError ? err.status : err instanceof SshKeyError ? 400 : 500;
+  return reply.code(status).send({ error: err instanceof Error ? err.message : '操作失败' });
+}
+
+/** 这个用户绑的 GitHub login，导入公钥要用。 */
+function githubLoginOf(userId: string): string {
+  const id = listIdentities(userId).find((i) => i.provider === 'github');
+  return id ? String(id.meta.login ?? '') : '';
+}
+
+/** agent 最近有没有上报。撤销预检要用它判断实况是否可信。 */
+function nodeOnline(nodeId: string): boolean {
+  const row = db.prepare('SELECT agent_last_report FROM nodes WHERE id=?').get(nodeId) as
+    | { agent_last_report: number }
+    | undefined;
+  if (!row) return false;
+  return Date.now() - Number(row.agent_last_report ?? 0) < getSettings().offlineAfterSeconds * 1000;
+}
+
+interface GrantPlan {
+  nodeId: string;
+  remoteUser: string;
+  expiresAt: number;
+  key: ReturnType<typeof getKey> & object;
+  preflight: { allowed: boolean; blockers: string[]; warnings: string[]; commands: string[] };
+}
+
+/** 授权的三件事：查参数、跑预检、生成命令。预检接口和创建接口共用它。 */
+async function buildGrantPlan(
+  req: FastifyRequest,
+  body: { nodeId?: string; keyId?: string; remoteUser?: string; expiresAt?: number },
+): Promise<GrantPlan> {
+  const nodeId = String(body.nodeId ?? '');
+  const node = db.prepare('SELECT id FROM nodes WHERE id=?').get(nodeId) as { id: string } | undefined;
+  if (!node) throw new SshStoreError('机器不存在', 404);
+
+  const key = getKey(String(body.keyId ?? ''));
+  if (!key) throw new SshStoreError('公钥不存在', 404);
+
+  const ep = ensureEndpoint(nodeId);
+  const remoteUser = String(body.remoteUser ?? ep.defaultUser ?? 'root');
+  const expiresAt = Math.max(0, Math.trunc(Number(body.expiresAt ?? 0)));
+
+  const parsed = parsePublicKey(key.publicKey);
+  const facts = hostFacts(nodeId, remoteUser, nodeOnline(nodeId));
+  const pre = preflightGrant({ key: parsed, facts, expiresAt });
+
+  const commands = pre.allowed
+    ? grantCommands(
+        parsed,
+        { remoteUser, nodeId, owner: keyOwnerSlug(key.id), day: todayStamp() },
+        expiresAt,
+      )
+    : [];
+
+  return {
+    nodeId,
+    remoteUser,
+    expiresAt,
+    key,
+    preflight: { ...pre, commands },
+  };
+}
+
+/**
+ * 进 comment 的所有者标识。
+ *
+ * 显示名可能是中文（"超级管理员"），而 comment 要写进目标机器的文件、
+ * 还要能被 shell 安全地引用，所以按 username → login → id 依次取，
+ * 取到第一个 slug 化之后非空的。
+ *
+ * 这段标识是机器上唯一能追溯"这把钥匙是谁装的"的线索，退化成 'user' 等于
+ * 丢掉了溯源能力 —— 所以 id 那一档也参与，它至少是唯一的。
+ */
+function userSlug(user: { username?: string; login?: string; id?: string }): string {
+  for (const raw of [user.username, user.login, user.id]) {
+    const safe = String(raw ?? '').replace(/[^A-Za-z0-9._-]/g, '');
+    if (safe) return safe.slice(0, 32);
+  }
+  return 'user';
+}
+
+/** 一把钥匙的主人，用于生成 comment。 */
+function keyOwnerSlug(keyId: string): string {
+  const row = db
+    .prepare(
+      'SELECT u.username, u.login, u.id FROM ssh_keys k LEFT JOIN users u ON u.id = k.owner_user_id WHERE k.id = ?',
+    )
+    .get(keyId) as { username: string; login: string; id: string } | undefined;
+  return row ? userSlug(row) : 'user';
+}
+
+function grantCommandsFor(grant: { keyId: string; nodeId: string; remoteUser: string; expiresAt: number }): string[] {
+  const key = getKey(grant.keyId);
+  if (!key) return [];
+  return grantCommands(
+    parsePublicKey(key.publicKey),
+    {
+      remoteUser: grant.remoteUser,
+      nodeId: grant.nodeId,
+      owner: keyOwnerSlug(grant.keyId),
+      day: todayStamp(),
+    },
+    grant.expiresAt,
+  );
+}
+
+/** 把一条授权推进下发队列。agent 拿到的是结构化参数，不是这些命令文本。 */
+function dispatchGrant(grantId: string, operator: string): void {
+  const grant = getGrant(grantId);
+  if (!grant) return;
+  const key = getKey(grant.keyId);
+  if (!key) return;
+
+  enqueue({
+    nodeId: grant.nodeId,
+    kind: 'ssh_grant',
+    payload: {
+      remoteUser: grant.remoteUser,
+      publicKey: key.publicKey,
+      fingerprint: key.fingerprint,
+      comment: grantComment({
+        remoteUser: grant.remoteUser,
+        nodeId: grant.nodeId,
+        // 按钥匙的主人取，不是按发起人 —— comment 要回答的是"这把钥匙是谁的"
+        owner: keyOwnerSlug(grant.keyId),
+        day: todayStamp(),
+      }),
+      expiresAt: grant.expiresAt,
+    },
+    preview: grantCommandsFor(grant),
+    operator,
+    refId: grant.id,
+  });
+}
+
 // —— 管理
 
-app.get('/api/admin/capabilities', { preHandler: requireCap('user:view') }, async () => ({
-  groups: groupedCapabilities(),
-  roles: (Object.keys(ROLE_LABEL) as Role[]).map((r) => ({
-    value: r,
-    label: ROLE_LABEL[r],
-    capabilities: [...resolveCapabilities(r)],
-  })),
-  all: ALL_CAPABILITIES,
-}));
+app.get('/api/admin/capabilities', { preHandler: requireCap('user:view') }, async () => {
+  const usage = roleUsage();
+  return {
+    groups: groupedCapabilities(),
+    roles: listRoles().map((r) => ({
+      value: r.id,
+      label: r.name,
+      description: r.description,
+      capabilities: r.capabilities,
+      system: r.system,
+      locked: r.locked,
+      sortOrder: r.sortOrder,
+      userCount: usage.get(r.id) ?? 0,
+      // anonymous 不挂在任何账号上，指派给某个人是没有意义的
+      assignable: r.id !== 'anonymous',
+    })),
+    all: ALL_CAPABILITIES,
+  };
+});
+
+// —— 角色
+
+app.post<{ Body: { id?: string; name?: string; description?: string; capabilities?: unknown; sortOrder?: number } }>(
+  '/api/admin/roles',
+  { preHandler: requireCap('role:manage') },
+  async (req, reply) => {
+    try {
+      const role = createRole(req.body ?? {});
+      audit({
+        userId: req.auth!.user.id,
+        sessionId: req.auth!.sessionId,
+        action: 'role.create',
+        target: role.id,
+        detail: `${role.name}（${role.capabilities.length} 项能力）`,
+        ip: ip(req),
+        userAgent: ua(req),
+      });
+      logEvent(null, 'warn', 'auth', `${req.auth!.user.name} 新建了角色「${role.name}」`);
+      return role;
+    } catch (err) {
+      const status = err instanceof RoleError ? err.status : 400;
+      return reply.code(status).send({ error: err instanceof Error ? err.message : '创建失败' });
+    }
+  },
+);
+
+app.patch<{
+  Params: { id: string };
+  Body: { name?: string; description?: string; capabilities?: unknown; sortOrder?: number };
+}>('/api/admin/roles/:id', { preHandler: requireCap('role:manage') }, async (req, reply) => {
+  try {
+    const before = getRole(req.params.id);
+    const role = updateRole(req.params.id, req.body ?? {});
+
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'role.update',
+      target: role.id,
+      detail: JSON.stringify({ name: role.name, capabilities: role.capabilities }),
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+
+    /*
+     * 改角色能力集要广播，不只是记一笔。
+     *
+     * 挂着这个角色的人此刻正开着页面，他们手里的 capabilities 是登录那一刻
+     * 算出来的。不推的话，一个刚被收走 block:enforce 的人，按钮还在、点了
+     * 才发现 403 —— 而更糟的方向是刚被授予的能力要重新登录才出现，
+     * 于是所有人都学会了"权限改了就刷新一下"，那本该是系统的事。
+     */
+    const capsChanged =
+      JSON.stringify(before?.capabilities ?? []) !== JSON.stringify(role.capabilities);
+    if (capsChanged) {
+      const affected = roleUsage().get(role.id) ?? 0;
+      logEvent(
+        null,
+        'warn',
+        'auth',
+        `${req.auth!.user.name} 修改了角色「${role.name}」的能力集，影响 ${affected} 个用户`,
+      );
+      pushAuthRefresh(role.id);
+    }
+
+    return role;
+  } catch (err) {
+    const status = err instanceof RoleError ? err.status : 400;
+    return reply.code(status).send({ error: err instanceof Error ? err.message : '保存失败' });
+  }
+});
+
+app.delete<{ Params: { id: string } }>(
+  '/api/admin/roles/:id',
+  { preHandler: requireCap('role:manage') },
+  async (req, reply) => {
+    try {
+      const role = getRole(req.params.id);
+      deleteRole(req.params.id);
+      audit({
+        userId: req.auth!.user.id,
+        sessionId: req.auth!.sessionId,
+        action: 'role.delete',
+        target: req.params.id,
+        detail: role?.name ?? '',
+        ip: ip(req),
+        userAgent: ua(req),
+      });
+      return { ok: true };
+    } catch (err) {
+      const status = err instanceof RoleError ? err.status : 400;
+      return reply.code(status).send({ error: err instanceof Error ? err.message : '删除失败' });
+    }
+  },
+);
+
+// —— 用户
 
 app.get('/api/admin/users', { preHandler: requireCap('user:view') }, async () =>
   listUsers().map((u) => ({
     ...publicUser(u),
     granted: u.granted,
     revoked: u.revoked,
-    capabilities: [...resolveCapabilities(u.role, u.granted, u.revoked)],
+    capabilities: [...capabilitiesFor(u.role, u.granted, u.revoked)],
+    identities: userIdentities(u.id),
   })),
 );
 
+app.post<{
+  Body: { username?: string; password?: string; name?: string; email?: string; role?: string; note?: string };
+}>('/api/admin/users', { preHandler: requireCap('user:create') }, async (req, reply) => {
+  /*
+   * 不能建一个权限比自己大的账号。
+   *
+   * 没这一条的话，一个只有 user:create 的人可以直接建一个 admin 账号然后登进去 ——
+   * 一步就把"能建号"升级成了"能干任何事"。这是权限系统里最常见的提权路径。
+   *
+   * user:escalate 是显式的例外，见 permissions.ts 里那段说明。
+   */
+  const target = String(req.body?.role ?? 'viewer');
+  const blocked = checkEscalation({
+    mine: req.auth!.caps,
+    currentCaps: new Set(),
+    nextCaps: capabilitiesFor(target),
+  });
+  if (blocked) {
+    return reply.code(403).send({
+      error: `不能创建权限比自己大的账号：「${getRole(target)?.name ?? target}」含有你没有的能力（${listCaps(blocked.caps)}）。${ESCALATE_HINT}`,
+    });
+  }
+
+  try {
+    const user = await createUser({
+      username: String(req.body?.username ?? ''),
+      password: String(req.body?.password ?? ''),
+      name: req.body?.name,
+      email: req.body?.email,
+      role: target,
+      note: req.body?.note,
+      // 管理员设的密码，本人第一次登录必须换掉 —— 密码经过了第二个人的手
+      mustChangePassword: true,
+    });
+
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'user.create',
+      target: user.id,
+      detail: `${user.username}（${getRole(user.role)?.name ?? user.role}）`,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    logEvent(null, 'warn', 'auth', `${req.auth!.user.name} 创建了账号 ${user.username}`);
+
+    return reply.code(201).send({
+      ...publicUser(user),
+      granted: user.granted,
+      revoked: user.revoked,
+      capabilities: [...capabilitiesFor(user.role, user.granted, user.revoked)],
+      identities: userIdentities(user.id),
+    });
+  } catch (err) {
+    const status = err instanceof AuthError ? err.status : 400;
+    return reply.code(status).send({ error: err instanceof Error ? err.message : '创建失败' });
+  }
+});
+
 app.patch<{
   Params: { id: string };
-  Body: { role?: Role; granted?: string[]; revoked?: string[]; disabled?: boolean; note?: string };
+  Body: { role?: Role; granted?: string[]; revoked?: string[]; disabled?: boolean; note?: string; name?: string };
 }>('/api/admin/users/:id', { preHandler: requireCap('user:manage') }, async (req, reply) => {
   const target = req.params.id;
   const current = listUsers().find((u) => u.id === target);
   if (!current) return reply.code(404).send({ error: '用户不存在' });
 
   // 不能把自己降权 —— 手滑一次就再也进不了管理页了
-  if (target === req.auth!.user.id && (req.body.role && req.body.role !== 'admin')) {
+  if (target === req.auth!.user.id && req.body.role && req.body.role !== current.role) {
     return reply.code(409).send({ error: '不能修改自己的角色，请让另一位管理员操作' });
   }
   if (target === req.auth!.user.id && req.body.disabled) {
     return reply.code(409).send({ error: '不能停用自己的账号' });
+  }
+
+  /*
+   * 不能把别人提到自己没有的能力上，也不能碰本来就比自己大的账号。
+   *
+   * 和建号那条是同一个漏洞的另一半：不堵的话，一个 operator 只要有 user:manage，
+   * 就能把某个受控账号提成 admin，再用那个账号回来提自己。
+   *
+   * 两种拒绝要分开说。都并成"不能授予你自己没有的能力"的话，一个只想给
+   * 运维加一项权限的人，会收到一串他根本没提交过的能力点 —— 那些是对方
+   * 早就有的。信息对不上时，人只会以为系统坏了，而不是去想自己权限不够。
+   */
+  const changesPermissions =
+    req.body.role !== undefined || req.body.granted !== undefined || req.body.revoked !== undefined;
+
+  if (changesPermissions) {
+    const blocked = checkEscalation({
+      mine: req.auth!.caps,
+      currentCaps: capabilitiesFor(current.role, current.granted, current.revoked),
+      nextCaps: capabilitiesFor(
+        req.body.role ?? current.role,
+        req.body.granted ?? current.granted,
+        req.body.revoked ?? current.revoked,
+      ),
+    });
+    if (blocked) {
+      return reply.code(403).send({
+        error:
+          blocked.kind === 'outranks'
+            ? `${current.name} 拥有你没有的能力（${listCaps(blocked.caps)}），不能修改他的权限。${ESCALATE_HINT}`
+            : `不能授予你自己没有的能力：${listCaps(blocked.caps)}。${ESCALATE_HINT}`,
+      });
+    }
   }
 
   // 也不能把最后一个管理员降权或停用，否则面板就没人能管了
@@ -960,7 +2182,13 @@ app.patch<{
     return reply.code(409).send({ error: '这是最后一个管理员，先提升另一位再操作' });
   }
 
-  const updated = updateUser(target, req.body);
+  let updated;
+  try {
+    updated = updateUser(target, req.body);
+  } catch (err) {
+    const status = err instanceof AuthError ? err.status : 400;
+    return reply.code(status).send({ error: err instanceof Error ? err.message : '保存失败' });
+  }
   if (!updated) return reply.code(404).send({ error: '用户不存在' });
 
   audit({
@@ -972,15 +2200,91 @@ app.patch<{
     ip: ip(req),
     userAgent: ua(req),
   });
-  logEvent(null, 'warn', 'auth', `${req.auth!.user.login} 修改了 ${updated.name} 的权限`);
+  logEvent(null, 'warn', 'auth', `${req.auth!.user.name} 修改了 ${updated.name} 的权限`);
+  pushAuthRefreshTo(target);
 
   return {
     ...publicUser(updated),
     granted: updated.granted,
     revoked: updated.revoked,
-    capabilities: [...resolveCapabilities(updated.role, updated.granted, updated.revoked)],
+    capabilities: [...capabilitiesFor(updated.role, updated.granted, updated.revoked)],
+    identities: userIdentities(updated.id),
   };
 });
+
+app.delete<{ Params: { id: string } }>(
+  '/api/admin/users/:id',
+  { preHandler: requireCap('user:create') },
+  async (req, reply) => {
+    const target = req.params.id;
+    if (target === req.auth!.user.id) {
+      return reply.code(409).send({ error: '不能删除自己的账号' });
+    }
+    const current = listUsers().find((u) => u.id === target);
+    if (!current) return reply.code(404).send({ error: '用户不存在' });
+
+    try {
+      deleteUser(target);
+    } catch (err) {
+      const status = err instanceof AuthError ? err.status : 400;
+      return reply.code(status).send({ error: err instanceof Error ? err.message : '删除失败' });
+    }
+
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'user.delete',
+      target,
+      detail: `${current.username || current.login}（${current.name}）`,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    logEvent(null, 'warn', 'auth', `${req.auth!.user.name} 删除了账号 ${current.username || current.login}`);
+    return { ok: true };
+  },
+);
+
+app.post<{ Params: { id: string }; Body: { password?: string } }>(
+  '/api/admin/users/:id/password',
+  { preHandler: requireCap('user:manage') },
+  async (req, reply) => {
+    const current = listUsers().find((u) => u.id === req.params.id);
+    if (!current) return reply.code(404).send({ error: '用户不存在' });
+
+    /*
+     * 重置别人的密码等于取得他的账号。
+     *
+     * 所以目标不能拥有你没有的能力 —— 否则"我能重置 admin 的密码"就是
+     * "我能成为 admin"的同义词，只是多绕了一次登录。
+     */
+    const theirs = capabilitiesFor(current.role, current.granted, current.revoked);
+    const blocked = checkEscalation({ mine: req.auth!.caps, currentCaps: theirs, nextCaps: theirs });
+    if (blocked) {
+      return reply.code(403).send({
+        error: `${current.name} 拥有你没有的能力（${listCaps(blocked.caps)}），重置他的密码等于取得他的账号。${ESCALATE_HINT}`,
+      });
+    }
+
+    try {
+      const password = await resetPassword(req.params.id, req.body?.password);
+      audit({
+        userId: req.auth!.user.id,
+        sessionId: req.auth!.sessionId,
+        action: 'password.reset',
+        target: req.params.id,
+        detail: req.body?.password ? '管理员指定了新密码' : '系统生成了新密码',
+        ip: ip(req),
+        userAgent: ua(req),
+      });
+      logEvent(null, 'warn', 'auth', `${req.auth!.user.name} 重置了 ${current.name} 的密码`);
+      // 只在这一次响应里回显，不落库、不进日志
+      return { ok: true, password, mustChange: true };
+    } catch (err) {
+      const status = err instanceof AuthError ? err.status : 400;
+      return reply.code(status).send({ error: err instanceof Error ? err.message : '重置失败' });
+    }
+  },
+);
 
 app.post<{ Params: { id: string } }>(
   '/api/admin/users/:id/sessions/revoke',
@@ -1170,7 +2474,16 @@ app.post<{ Body: { token?: string; node?: AgentNodeInfo } }>(
           event: logEvent(node.id, 'info', 'agent', `${node.name ?? node.id} 的采集端已接入`),
         }));
       }
-      return { ok: true, created };
+
+      /*
+       * 每次注册都换发一把独立密钥。
+       *
+       * 注册发生在 agent 启动时，换发的代价只是这台机器要重新落盘一次；
+       * 而好处是密钥有了自然的轮换周期，且一台机器被摘除重装后，
+       * 旧密钥立刻作废。
+       */
+      const secret = issueNodeSecret(node.id);
+      return { ok: true, created, secret };
     } catch (err) {
       return reply.code(409).send({ error: err instanceof Error ? err.message : '注册失败' });
     }
@@ -1192,20 +2505,91 @@ app.post<{ Body: { token?: string } & AgentReport }>('/api/agent/report', async 
 
   try {
     ingestReport(req.body, ip(req));
+    // SSH 实况是可选的：老 agent 不带这一段，带了就顺手对一次账
+    if (req.body.ssh) ingestSshFacts(req.body.nodeId, req.body.ssh);
   } catch (err) {
     return reply.code(400).send({ error: err instanceof Error ? err.message : '写入失败' });
   }
 
-  // 面板还没有反向下发通道，先回空指令，agent 会安静地继续跑
-  return { ok: true, commands: [] };
+  /*
+   * 反向下发。
+   *
+   * **只发给完成了密钥升级的 agent。** 共享的 SONAR_AGENT_TOKEN 在每台机器上
+   * 都能读到，拿它既能拉取别台机器的待办指令（看到面板打算给谁装什么钥匙），
+   * 也能替别台机器发回执 —— 后者会让面板显示一个虚假的"已撤销"，
+   * 而那把钥匙还在机器上。这比没有这个功能更糟。
+   *
+   * 没升级的 agent 照常上报，只是拿不到指令。这道闸门让升级是自愿、可观测、
+   * 可回滚的：老 agent 一切如常，新能力只给验证过身份的那些。
+   */
+  if (!nodeSecretValid(req.body.nodeId, req.body.secret)) {
+    return { ok: true, commands: [] };
+  }
+
+  const claimed = claimFor(req.body.nodeId);
+  return {
+    ok: true,
+    commands: claimed.map((c) => ({
+      id: c.id,
+      kind: c.kind,
+      // payload 是结构化参数。preview 里的命令文本只用于展示和存档，agent 不看
+      ...c.payload,
+    })),
+  };
 });
 
-app.post<{ Body: { token?: string } }>('/api/agent/ack', async (req, reply) => {
-  if (!agentTokenValid(req.body?.token)) {
-    return reply.code(401).send({ error: 'agent token 不正确' });
+app.post<{ Body: { token?: string; secret?: string; nodeId?: string; result?: AckBody } }>(
+  '/api/agent/ack',
+  async (req, reply) => {
+    if (!agentTokenValid(req.body?.token)) {
+      return reply.code(401).send({ error: 'agent token 不正确' });
+    }
+    const nodeId = String(req.body?.nodeId ?? '');
+    if (!nodeSecretValid(nodeId, req.body?.secret)) {
+      return reply.code(403).send({ error: '这台机器还没有完成密钥升级，无法回执' });
+    }
+
+    const r = req.body?.result;
+    if (!r?.id) return reply.code(400).send({ error: '缺少指令 id' });
+
+    const cmd = ackCommand(nodeId, {
+      id: r.id,
+      ok: Boolean(r.ok),
+      skipped: Boolean(r.skipped),
+      output: r.output,
+    });
+    if (!cmd) return reply.code(404).send({ error: '指令不存在或不属于这台机器' });
+
+    /*
+     * 回执只更新指令自己的状态，**不把授权置为生效**。
+     *
+     * agent 说"写进去了"只说明它那边没报错。真正的确认要等下一拍的实况上报 ——
+     * 见 ssh-store 的 reconcileGrants。少了这条区分，一次静默失败就会让面板
+     * 显示"已生效"，而人据此以为自己能连上去了。
+     */
+    if (cmd.state === 'failed' && cmd.refId) {
+      markGrantFailedSafe(cmd.refId, cmd.result || 'agent 执行失败');
+      logEvent(nodeId, 'error', 'ssh', `SSH 指令执行失败：${cmd.result.slice(0, 120)}`);
+    }
+
+    return { ok: true };
+  },
+);
+
+interface AckBody {
+  id?: string;
+  ok?: boolean;
+  skipped?: boolean;
+  output?: string;
+}
+
+function markGrantFailedSafe(grantId: string, reason: string): void {
+  try {
+    markGrantFailed(grantId, reason);
+  } catch {
+    // ref 指向的对象可能已经被删了，回执不该因此失败
   }
-  return { ok: true };
-});
+}
 
 /**
  * 一次性 OAuth 配置。
@@ -1291,6 +2675,42 @@ function formatTtl(seconds: number): string {
  * 两种疏忽的代价差得远，默认值该站在代价小的那一边。
  */
 const SIMULATOR = process.env.SONAR_SIMULATOR === '1';
+
+/*
+ * 账号体系的初始化。
+ *
+ * 顺序有依赖：角色得先在，createUser 才校验得过 roleExists；身份迁移要在
+ * 建 root 之前跑完，否则一个本该由老 github_id 认领的账号会被当成"还没有管理员"
+ * 而多造一个 root 出来。
+ */
+ensureSystemRoles();
+
+const migratedIdentities = migrateLegacyGithubIdentities();
+if (migratedIdentities > 0) {
+  console.log(`  已把 ${migratedIdentities} 个 GitHub 账号迁入身份表`);
+}
+
+const DATA_DIR = process.env.SONAR_DATA_DIR ?? resolve(process.cwd(), 'data');
+const initialAdmin = await ensureRootAdmin(DATA_DIR);
+if (initialAdmin) {
+  /*
+   * 初始密码只在这里出现一次。
+   *
+   * 打印到 stdout 而不是走 app.log：日志级别默认是 warn，用 logger 打会被吞掉，
+   * 而这行字是全新部署唯一能进门的凭据。同时它也写在 data/initial-admin.txt 里 ——
+   * 用 systemd 跑的时候 stdout 进了 journal，翻起来不如直接 cat 一个文件。
+   */
+  console.log('');
+  console.log('  ┌─ 已创建初始管理员账号 ─────────────────────');
+  console.log(`  │  用户名：${initialAdmin.username}`);
+  console.log(`  │  密码：  ${initialAdmin.password}`);
+  console.log('  │');
+  console.log('  │  首次登录后会要求修改密码。');
+  console.log('  │  同一份也写在 data/initial-admin.txt（0600）。');
+  console.log('  └────────────────────────────────────────────');
+  console.log('');
+  logEvent(null, 'warn', 'auth', '面板初始化：已创建超级管理员账号');
+}
 
 if (SIMULATOR) {
   seedDatabase();

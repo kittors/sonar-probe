@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Logo, IconChevronDown, IconGlobe, IconMoon, IconShield, IconSun } from './icons';
+import { LoginDialog } from './LoginDialog';
 import { Modal } from './Modal';
 import { useLive } from '../lib/live';
 import { useSettings } from '../lib/settings';
@@ -137,36 +138,30 @@ export function Shell({ children }: { children: ReactNode }) {
 /**
  * 登录入口。
  *
- * 就是一个直达 GitHub 授权的链接，没有中间菜单 ——
- * 想匿名看的人直接看概览就行，不需要"访客登录"这一步；
- * 需要进详情的人只有一条路：GitHub 授权。首个授权成功的人即管理员。
+ * 打开一个对话框而不是直接跳 GitHub —— 现在有三条路（密码、GitHub、访客），
+ * 而密码是唯一不依赖外部配置、永远可用的那条。直接跳转的写法把面板的
+ * 可登录性绑在了 OAuth 配置上：secret 填错、GitHub 挂了、机器出不了网，
+ * 管理员就再也进不去自己的面板。
  */
 function SignInButton() {
-  const { config } = useAuth();
-  const [showSetup, setShowSetup] = useState(false);
-  const ready = config?.github ?? false;
+  const [open, setOpen] = useState(false);
 
-  // 配好了就是一个直达 GitHub 的链接
-  if (ready) {
-    return (
-      <a
-        className="ds-btn ds-btn-primary ds-btn-s"
-        href={`/api/auth/github?redirect=${encodeURIComponent(location.pathname + location.search)}`}
-        style={{ textDecoration: 'none' }}
-      >
-        登录
-      </a>
-    );
-  }
+  /*
+   * GitHub 回调失败会带着 ?login_error= 跳回来。
+   *
+   * 那时人已经不在登录框里了，不自动打开的话，页面看起来就是"点了登录，
+   * 转了一圈，什么都没发生"—— 最难排查的那种失败。
+   */
+  useEffect(() => {
+    if (new URLSearchParams(location.search).has('login_error')) setOpen(true);
+  }, []);
 
-  // 没配好也必须能点。摆一个点不动的按钮却不说为什么，
-  // 只会让人以为是坏了 —— 点开告诉他还差哪一步。
   return (
     <>
-      <button className="ds-btn ds-btn-primary ds-btn-s" onClick={() => setShowSetup(true)}>
+      <button className="ds-btn ds-btn-primary ds-btn-s" onClick={() => setOpen(true)}>
         登录
       </button>
-      {showSetup && <OAuthSetupDialog onClose={() => setShowSetup(false)} />}
+      {open && <LoginDialog onClose={() => setOpen(false)} />}
     </>
   );
 }
@@ -186,7 +181,7 @@ function SignInButton() {
  */
 const SETUP_CMD = 'sudo vi /opt/sonar/server/data/panel.env && sudo systemctl restart sonar';
 
-function OAuthSetupDialog({ onClose }: { onClose: () => void }) {
+export function OAuthSetupDialog({ onClose }: { onClose: () => void }) {
   const callback = `${location.origin}/api/auth/github/callback`;
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -409,11 +404,26 @@ function UserMenu() {
               {me.name}
             </div>
             <div className="ds-text-caption text-ds-description">
-              {me.kind === 'github' ? `@${me.login}` : '访客身份'} · {me.roleLabel}
+              {me.kind === 'guest' ? '访客身份' : `@${me.username || me.login}`} · {me.roleLabel}
             </div>
           </div>
 
           <div style={{ height: 1, background: 'var(--ds-border)', margin: '2px 0 4px' }} />
+
+          {/* 访客没有可维护的凭据，个人设置对他是一个空页面 */}
+          {me.kind !== 'guest' && (
+            <Link to="/settings" role="menuitem" onClick={() => setOpen(false)} className="ds-menu-item">
+              <IconGlobe size={14} />
+              个人设置
+            </Link>
+          )}
+
+          {can('ssh:view') || can('ssh:keys') ? (
+            <Link to="/ssh" role="menuitem" onClick={() => setOpen(false)} className="ds-menu-item">
+              <IconShield size={14} />
+              SSH 接入
+            </Link>
+          ) : null}
 
           {canAdmin && (
             <Link to="/admin" role="menuitem" onClick={() => setOpen(false)} className="ds-menu-item">

@@ -73,16 +73,35 @@ type Report struct {
 	Metric   Metric           `json:"metric"`
 	Services []ServiceTraffic `json:"services,omitempty"`
 	Peers    []PeerTraffic    `json:"peers,omitempty"`
+	// 每机独立密钥。注册时由面板下发，没带就只能上报、拿不到下发指令
+	Secret string `json:"secret,omitempty"`
+	// SSH 实况。采不到时整块省略，面板据此区分"没有钥匙"和"采不到"
+	SSH *SSHFacts `json:"ssh,omitempty"`
 }
 
-// Command 是面板下发的指令。目前只有封禁/解封。
+// Command 是面板下发的指令。
+//
+// **agent 不执行 Commands 里的字符串**，那只是给人看的展示文本。
+// 真正被执行的是下面这些结构化字段，agent 拿它们自己构造操作 ——
+// 面板一旦被攻破，也没法借下发在机器上跑任意命令。
 type Command struct {
-	ID       string   `json:"id"`
-	Kind     string   `json:"kind"` // "block" | "unblock"
-	Target   string   `json:"target"`
-	TTL      int      `json:"ttlSeconds"`
-	Commands []string `json:"commands"`
-	Mode     string   `json:"mode"` // "dry-run" | "enforced"
+	ID   string `json:"id"`
+	Kind string `json:"kind"` // block | unblock | ssh_grant | ssh_revoke
+
+	// —— 封禁
+	Target string `json:"target,omitempty"`
+	TTL    int    `json:"ttlSeconds,omitempty"`
+	Mode   string `json:"mode,omitempty"` // dry-run | enforced
+
+	// —— SSH
+	RemoteUser  string `json:"remoteUser,omitempty"`
+	PublicKey   string `json:"publicKey,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Comment     string `json:"comment,omitempty"`
+	ExpiresAt   int64  `json:"expiresAt,omitempty"`
+
+	// 仅供展示与存档
+	Commands []string `json:"commands,omitempty"`
 }
 
 type CommandResult struct {
