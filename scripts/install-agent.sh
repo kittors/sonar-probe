@@ -440,6 +440,10 @@ NoNewPrivileges=true
 # read-only 保留了读的能力，同时仍然挡住写。需要远程改密钥时由下面的
 # ReadWritePaths 单独开口子，比整个关掉 ProtectHome 收敛得多。
 ProtectHome=read-only$SSH_KEYS_RW
+# 每机密钥要落盘，而 ProtectSystem=strict 让 /etc 和 /var 都只读。
+# StateDirectory 会自动创建 /var/lib/sonar 并给它可写权限，
+# 这是 systemd 为"服务自己生成的状态"准备的正规开口
+StateDirectory=sonar
 PrivateTmp=true
 ProtectKernelModules=true
 RestrictRealtime=true

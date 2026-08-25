@@ -60,8 +60,15 @@ func main() {
 		 * 不加这个参数时，面板下发的密钥指令只会打印不会执行，
 		 * 和 -enforce 对封禁的关系完全一致。
 		 */
-		sshKeys  = flag.Bool("ssh-keys", false, "允许面板远程增删 authorized_keys。不加这个参数时密钥指令只打印不执行")
-		stateDir = flag.String("state-dir", envOr("SONAR_STATE_DIR", "/etc/sonar"), "存放每机密钥的目录")
+		sshKeys = flag.Bool("ssh-keys", false, "允许面板远程增删 authorized_keys。不加这个参数时密钥指令只打印不执行")
+		/*
+		 * 每机密钥存 /var/lib 而不是 /etc。
+		 *
+		 * 它是机器自己生成的状态，不是人写的配置 —— 按 FHS 就该在 /var/lib。
+		 * 更实际的理由是 systemd 的 ProtectSystem=strict 会让 /etc 只读，
+		 * 而 StateDirectory= 正好为 /var/lib 这条路径准备了可写的开口。
+		 */
+		stateDir = flag.String("state-dir", envOr("SONAR_STATE_DIR", "/var/lib/sonar"), "存放每机密钥的目录")
 	)
 	flag.Parse()
 
