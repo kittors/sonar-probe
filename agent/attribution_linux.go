@@ -60,10 +60,15 @@ conntrack 里的 bytes 是**连接建立以来**的累计值，而且连接关�
 流消失不会丢账：conntrack 的 TCP 条目在连接关闭后还会保留两分钟，
 而采样是秒级的，消失前的最后一拍早已把它结算干净。
 */
-type flowBytes struct{ rx, tx uint64 }
+type flowBytes struct {
+	rx, tx uint64
+	// 最后一次在 conntrack 里见到它是第几拍。见 flowForgetTicks
+	tick uint64
+}
 
 type flowTracker struct {
 	seen map[string]flowBytes
+	tick uint64
 	/*
 	 * 首次采样只建基线，不产出增量。
 
@@ -85,23 +90,43 @@ nf_conntrack_max 默认能到 26 万，全都记下来要几十 MB —— 探针
 */
 const maxTrackedFlows = 60_000
 
+/*
+一条流消失多少拍之后才真正忘掉它。
+
+**这个宽限期是必须的，不是优化。** /proc/net/nf_conntrack 是 seq_file：内核
+遍历哈希表的过程中，如果表被并发增删，某些条目会被漏读 —— 表越大、连接
+变化越快，漏得越多。
+
+于是一条挂着的长连接会在某一拍"消失"、下一拍又"出现"。没有宽限期的话，
+重新出现时它不在跟踪表里，就被当成新流，**把它从建立至今的累计量整个再计一遍**。
+一条累计 100 MB 的连接每被漏读一次就凭空多算 100 MB。
+
+实测一台做中转的机器（conntrack 1200 余条，3 秒一拍）：20 秒采样一次时
+归因是真实流量的 1.41 倍，换成 3 秒一拍就变成 35 倍，其中 96% 来自
+"新流全量计入"。采样越密错得越离谱 —— 这是个只在真机上才暴露的坑。
+
+40 拍在默认 3 秒间隔下约两分钟，足够盖过漏读；而端口复用真的发生时，
+计数器会往回走，那条路径自己会处理，不依赖这里的记忆。
+*/
+const flowForgetTicks = 40
+
 // delta 把 conntrack 快照换算成自上一拍以来的增量。
 // 返回的 ctFlow 里 rx/tx 是增量而非累计值，其余字段原样保留。
 func (t *flowTracker) delta(flows []ctFlow) []ctFlow {
-	next := make(map[string]flowBytes, len(flows))
+	t.tick++
 	out := make([]ctFlow, 0, len(flows))
 
 	for _, f := range flows {
-		cur := flowBytes{rx: f.rx, tx: f.tx}
 		prev, known := t.seen[f.key]
-		if !known && len(next) >= maxTrackedFlows {
+		if !known && len(t.seen) >= maxTrackedFlows {
 			continue
 		}
-		next[f.key] = cur
+		cur := flowBytes{rx: f.rx, tx: f.tx, tick: t.tick}
+		t.seen[f.key] = cur
 
 		switch {
 		case !known:
-			// 没见过的流：它的累计值就是这一拍新增的，rx/tx 保持原样。
+			// 真的没见过：它的累计值就是这一拍新增的，rx/tx 保持原样。
 		case cur.rx < prev.rx || cur.tx < prev.tx:
 			// 计数器往回走，说明这个四元组已经被复用成了另一条连接。
 			// 当成新连接全量计入，比记 0 更接近事实。
@@ -116,14 +141,27 @@ func (t *flowTracker) delta(flows []ctFlow) []ctFlow {
 		out = append(out, f)
 	}
 
-	// 本拍没出现的流已经消失，不必再占着内存 —— 它们的账在消失前那一拍就结清了
-	t.seen = next
+	t.forgetStale()
 
 	if !t.primed {
 		t.primed = true
 		return nil
 	}
 	return out
+}
+
+// forgetStale 清掉连续多拍没再出现的流。
+// 它们的账在消失前那一拍已经结清，留着只是为了扛住 conntrack 的漏读。
+func (t *flowTracker) forgetStale() {
+	if t.tick <= flowForgetTicks {
+		return
+	}
+	cutoff := t.tick - flowForgetTicks
+	for k, v := range t.seen {
+		if v.tick < cutoff {
+			delete(t.seen, k)
+		}
+	}
 }
 
 /*
@@ -335,6 +373,15 @@ func readConntrackFrom(path string, local map[string]bool) []ctFlow {
 
 		var flow ctFlow
 		switch {
+		case local[origSrc] && local[origDst]:
+			/*
+			 * 两端都是本机：回环或本机进程之间的连接。
+			 *
+			 * 它们一个字节都没经过物理网卡，readNetTotals 也跳过了 lo，
+			 * 计进归因会让"谁吃了流量"的总和超过实际流量 —— 一台把 nginx
+			 * 反代到本地端口的机器，同一份数据会被记两遍。
+			 */
+			continue
 		case local[origSrc]:
 			// 出站：原始方向是本机发出的
 			flow = ctFlow{key: key, localPort: origSport, peerIP: origDst, peerPort: origDport, tx: origBytes, rx: replyBytes}

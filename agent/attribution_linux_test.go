@@ -138,19 +138,72 @@ func TestFlowTrackerHandlesPortReuse(t *testing.T) {
 	}
 }
 
-func TestFlowTrackerDropsVanishedFlows(t *testing.T) {
+func TestFlowTrackerSurvivesConntrackReadGap(t *testing.T) {
+	/*
+	 * 这条守着整个归因最贵的一个坑。
+	 *
+	 * /proc/net/nf_conntrack 是 seq_file，遍历过程中表被并发增删就会漏读条目 ——
+	 * 一条挂着的长连接会在某一拍"消失"、下一拍又"出现"。没有宽限期的话，
+	 * 重现时它不在跟踪表里，就被当成新流把累计量整个再计一遍。
+	 *
+	 * 实测一台中转机：3 秒一拍时归因是真实流量的 35 倍，其中 96% 来自这个。
+	 */
+	tr := newFlowTracker()
+	tr.delta(flowsAt(1_000_000, 1_000_000)) // 建基线
+	tr.delta(flowsAt(1_000_100, 1_000_100)) // 正常增长
+
+	tr.delta(nil) // 这一拍被漏读了
+
+	got := tr.delta(flowsAt(1_000_300, 1_000_300))
+	if len(got) != 1 {
+		t.Fatalf("重现的流应产出增量，实际 %d 条", len(got))
+	}
+	if got[0].rx != 200 || got[0].tx != 200 {
+		t.Errorf(
+			"漏读一拍之后应接着上次的基线算（期望 200/200），实际 rx=%d tx=%d —— "+
+				"把累计值当成增量报上去，一条 1 GB 的长连接每漏读一次就多算 1 GB",
+			got[0].rx, got[0].tx,
+		)
+	}
+}
+
+func TestFlowTrackerForgetsAfterGracePeriod(t *testing.T) {
 	tr := newFlowTracker()
 	tr.delta(flowsAt(100, 100))
-	tr.delta(nil) // 连接消失，跟踪表应随之清空
 
+	// 宽限期是为了扛漏读，不是永久记忆 —— 否则跟踪表只增不减
+	for i := 0; i < flowForgetTicks+2; i++ {
+		tr.delta(nil)
+	}
 	if len(tr.seen) != 0 {
-		t.Errorf("消失的流不该继续占内存，实际还留着 %d 条", len(tr.seen))
+		t.Errorf("超过宽限期的流该被忘掉，实际还留着 %d 条", len(tr.seen))
 	}
 
-	// 同一个四元组重新出现时是一条全新的连接，不该拿旧基线去减
+	// 忘掉之后同一个四元组就是一条全新的连接了
 	got := tr.delta(flowsAt(60, 40))
 	if len(got) != 1 || got[0].rx != 60 || got[0].tx != 40 {
 		t.Fatalf("重现的四元组应按新连接计入，实际 %+v", got)
+	}
+}
+
+func TestReadConntrackSkipsLoopback(t *testing.T) {
+	/*
+	 * 两端都是本机的连接一个字节都没过物理网卡，而 readNetTotals 跳过了 lo。
+	 * 计进归因的话，一台把 nginx 反代到本地端口的机器会把同一份数据记两遍，
+	 * 「谁吃了流量」的总和就会超过实际流量。
+	 */
+	const sample = `ipv4     2 tcp      6 431999 ESTABLISHED src=127.0.0.1 dst=127.0.0.1 sport=59944 dport=7444 packets=10 bytes=8192 src=127.0.0.1 dst=127.0.0.1 sport=7444 dport=59944 packets=10 bytes=4096 mark=0 use=1
+ipv4     2 tcp      6 431999 ESTABLISHED src=10.0.2.15 dst=10.0.2.15 sport=40000 dport=8080 packets=3 bytes=300 src=10.0.2.15 dst=10.0.2.15 sport=8080 dport=40000 packets=3 bytes=400 mark=0 use=1
+ipv4     2 tcp      6 431999 ESTABLISHED src=10.0.2.15 dst=1.2.3.4 sport=51234 dport=443 packets=42 bytes=5120 src=1.2.3.4 dst=10.0.2.15 sport=443 dport=51234 packets=88 bytes=204800 mark=0 use=1
+`
+	local := map[string]bool{"127.0.0.1": true, "10.0.2.15": true}
+	flows := readConntrackFrom(writeSample(t, sample), local)
+
+	if len(flows) != 1 {
+		t.Fatalf("只该留下那条真正出网的连接，实际 %d 条: %+v", len(flows), flows)
+	}
+	if flows[0].peerIP != "1.2.3.4" {
+		t.Errorf("留下的应该是出网那条，实际对端 %s", flows[0].peerIP)
 	}
 }
 
