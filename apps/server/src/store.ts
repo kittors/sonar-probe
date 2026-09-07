@@ -220,26 +220,64 @@ export function getMetricHistory(nodeId: string, sinceMs: number, maxPoints = 72
   return out;
 }
 
-export function getDailyTraffic(nodeId: string, days = 30): DailyTraffic[] {
-  const rows = db
-    .prepare('SELECT * FROM daily_traffic WHERE node_id=? ORDER BY day DESC LIMIT ?')
-    .all(nodeId, days) as Array<Record<string, unknown>>;
-  return rows
-    .map((r) => ({
-      nodeId: r.node_id as string,
-      day: r.day as string,
-      rx: r.rx as number,
-      tx: r.tx as number,
-    }))
-    .reverse();
+/**
+ * 一个闭区间的日期范围，YYYY-MM-DD。
+ *
+ * 流量的三张表都按天分桶，所以对外的时间参数统一到「天」这个粒度 ——
+ * 让人能选到小时，却只能按天返回，是更糟的欺骗。
+ */
+export interface DayRange {
+  from: string;
+  to: string;
 }
 
-export function getServiceTraffic(nodeId: string, days = 7): ServiceTraffic[] {
-  const since = dayKeyIn(getSettings().timezone, Date.now() - (days - 1) * 86_400_000);
+/** 最近 N 天（含今天）的日期范围，按面板时区算。 */
+export function recentDays(days: number): DayRange {
+  const tz = getSettings().timezone;
+  const now = Date.now();
+  return {
+    from: dayKeyIn(tz, now - (Math.max(1, days) - 1) * 86_400_000),
+    to: dayKeyIn(tz, now),
+  };
+}
+
+/**
+ * 某台机器当前流量周期的日期范围。
+ *
+ * cycleRange 给的是左闭右开（end 是下个周期的第一天），而这里对外统一用闭区间，
+ * 所以 to 取「今天」而不是周期结束日 —— 未来那些天还没有数据，
+ * 把它们算进区间只会让"日均"被一串空日子稀释。
+ */
+export function nodeCycleRange(nodeId: string): DayRange {
+  const row = db.prepare('SELECT billing_day FROM nodes WHERE id=?').get(nodeId) as
+    | { billing_day: number }
+    | undefined;
+  const tz = getSettings().timezone;
+  const today = dayKeyIn(tz, Date.now());
+  if (!row) return { from: today, to: today };
+  const { start } = cycleRange(row.billing_day, new Date(), tz);
+  return { from: start, to: today };
+}
+
+export function getDailyTraffic(nodeId: string, range: DayRange): DailyTraffic[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM daily_traffic WHERE node_id=? AND day >= ? AND day <= ? ORDER BY day ASC',
+    )
+    .all(nodeId, range.from, range.to) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    nodeId: r.node_id as string,
+    day: r.day as string,
+    rx: r.rx as number,
+    tx: r.tx as number,
+  }));
+}
+
+export function getServiceTraffic(nodeId: string, range: DayRange): ServiceTraffic[] {
   const rows = db
     .prepare(
       // 老版本 agent 把查不到归属的连接写成 'unknown'，新版本写 '已结束的连接'。
-      // 查询跨 7 天，不归一化就会看到两条含义相同的记录并排站着。
+      // 查询跨多天，不归一化就会看到两条含义相同的记录并排站着。
       `SELECT
          CASE WHEN service IN ('unknown', '(已结束的连接)', '已结束的连接')
               THEN '已结束的连接' ELSE service END AS service,
@@ -248,11 +286,11 @@ export function getServiceTraffic(nodeId: string, days = 7): ServiceTraffic[] {
          SUM(rx) AS rx, SUM(tx) AS tx, MAX(conns) AS conns,
          ports, pids
        FROM service_traffic
-       WHERE node_id=? AND day >= ?
+       WHERE node_id=? AND day >= ? AND day <= ?
        GROUP BY 1
        ORDER BY (SUM(rx) + SUM(tx)) DESC`,
     )
-    .all(nodeId, since) as Array<Record<string, unknown>>;
+    .all(nodeId, range.from, range.to) as Array<Record<string, unknown>>;
 
   return rows.map((r) => ({
     nodeId,
@@ -266,18 +304,42 @@ export function getServiceTraffic(nodeId: string, days = 7): ServiceTraffic[] {
   }));
 }
 
-export function getPeerTraffic(nodeId: string, limit = 50): PeerTraffic[] {
+export function getPeerTraffic(nodeId: string, range: DayRange, limit = 50): PeerTraffic[] {
   const rows = db
     .prepare(
-      `SELECT p.*,
+      /*
+       * 按 IP 跨天合并。
+       *
+       * 威胁分取区间内的最高值，理由和入库时一样：一个地址前天扫过端口、
+       * 这两天安静下来，不该因为最近一天很干净就把那次扫描抹掉。
+       * 判定依据要跟着最高分那一天走，否则会出现「92 分」配一句
+       * 「连接数偏多」的错配理由。
+       */
+      `SELECT p.ip,
+              SUM(p.rx) AS rx, SUM(p.tx) AS tx, MAX(p.conns) AS conns,
+              MAX(p.country_code) AS country_code, MAX(p.asn) AS asn, MAX(p.org) AS org,
+              MAX(p.threat_score) AS threat_score,
+              (SELECT q.threat_reasons FROM peer_traffic q
+                WHERE q.node_id = p.node_id AND q.ip = p.ip AND q.day >= ? AND q.day <= ?
+                ORDER BY q.threat_score DESC, q.day DESC LIMIT 1) AS threat_reasons,
+              (SELECT q.ports FROM peer_traffic q
+                WHERE q.node_id = p.node_id AND q.ip = p.ip AND q.day >= ? AND q.day <= ?
+                ORDER BY q.day DESC LIMIT 1) AS ports,
+              MIN(p.first_seen) AS first_seen, MAX(p.last_seen) AS last_seen,
               EXISTS(SELECT 1 FROM block_rules b
                      WHERE b.node_id = p.node_id AND b.target = p.ip AND b.state = 'active') AS blocked
        FROM peer_traffic p
-       WHERE p.node_id = ?
-       ORDER BY (p.rx + p.tx) DESC
+       WHERE p.node_id = ? AND p.day >= ? AND p.day <= ?
+       GROUP BY p.ip
+       ORDER BY (SUM(p.rx) + SUM(p.tx)) DESC
        LIMIT ?`,
     )
-    .all(nodeId, limit) as Array<Record<string, unknown>>;
+    .all(
+      range.from, range.to,
+      range.from, range.to,
+      nodeId, range.from, range.to,
+      limit,
+    ) as Array<Record<string, unknown>>;
 
   return rows.map((r) => ({
     nodeId,

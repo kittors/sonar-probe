@@ -8,7 +8,7 @@ import websocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import type { WebSocket } from 'ws';
 
-import { db, pruneAuditLog, pruneMetrics, purgeSimulatedData } from './db.js';
+import { db, pruneAuditLog, pruneMetrics, pruneTrafficDetail, purgeSimulatedData } from './db.js';
 import { refreshRates, refreshRatesIfStale, ratesPayload } from './rates.js';
 import {
   COMMON_TIMEZONES,
@@ -39,7 +39,10 @@ import {
   listEvents,
   listNodeStates,
   logEvent,
+  nodeCycleRange,
+  recentDays,
   updateNode,
+  type DayRange,
   type NodePatch,
 } from './store.js';
 import {
@@ -1053,23 +1056,64 @@ app.get<{ Params: { id: string }; Querystring: { range?: string } }>(
   },
 );
 
-app.get<{ Params: { id: string }; Querystring: { days?: string } }>(
+/*
+ * 流量查询的时间范围。
+ *
+ * 三个流量接口共用一份解析，因为界面上它们本来就该跟着同一个区间走 ——
+ * 「这段时间走了 338 GB，其中 nginx 吃掉 210 GB」这句话要成立，
+ * 两个数字必须来自同一个区间，各查各的只会让人对着两个口径找原因。
+ *
+ * from/to 都是 YYYY-MM-DD 闭区间。省略时回退到 days（保持老前端能用），
+ * 两者都没有就用默认天数。
+ */
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** 最长可查两年。不设上限的话，一个 from=0001-01-01 就能让 SQLite 扫全表 */
+const MAX_RANGE_DAYS = 730;
+
+function parseRange(
+  nodeId: string,
+  q: { from?: string; to?: string; days?: string },
+  defaultDays: number,
+): DayRange {
+  if (q.from === 'cycle') return nodeCycleRange(nodeId);
+  if (!DAY_RE.test(q.from ?? '') || !DAY_RE.test(q.to ?? '')) {
+    return recentDays(clampInt(q.days, defaultDays, 1, 366));
+  }
+  // 传反了就换过来，比返回空数组让人对着空图表猜要好
+  let [from, to] = [q.from!, q.to!].sort() as [string, string];
+  const span = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+  if (!Number.isFinite(span)) return recentDays(defaultDays);
+  if (span > MAX_RANGE_DAYS) {
+    from = new Date(Date.parse(`${to}T00:00:00Z`) - MAX_RANGE_DAYS * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+  }
+  return { from, to };
+}
+
+type RangeQuery = { from?: string; to?: string; days?: string };
+
+app.get<{ Params: { id: string }; Querystring: RangeQuery }>(
   '/api/nodes/:id/traffic/daily',
   { preHandler: requireCap('traffic:daily') },
-  async (req) => getDailyTraffic(req.params.id, clampInt(req.query.days, 30, 1, 90)),
+  async (req) => getDailyTraffic(req.params.id, parseRange(req.params.id, req.query, 30)),
 );
 
-app.get<{ Params: { id: string }; Querystring: { days?: string } }>(
+app.get<{ Params: { id: string }; Querystring: RangeQuery }>(
   '/api/nodes/:id/traffic/services',
   { preHandler: requireCap('traffic:services') },
-  async (req) => getServiceTraffic(req.params.id, clampInt(req.query.days, 7, 1, 30)),
+  async (req) => getServiceTraffic(req.params.id, parseRange(req.params.id, req.query, 7)),
 );
 
-app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+app.get<{ Params: { id: string }; Querystring: RangeQuery & { limit?: string } }>(
   '/api/nodes/:id/traffic/peers',
   { preHandler: requireCap('traffic:peers') },
   async (req) => {
-    const peers = getPeerTraffic(req.params.id, clampInt(req.query.limit, 50, 1, 200));
+    const peers = getPeerTraffic(
+      req.params.id,
+      parseRange(req.params.id, req.query, 7),
+      clampInt(req.query.limit, 50, 1, 200),
+    );
     // 对端地址同样受 full_ip 管：看不到完整地址的人也没法照着去封
     if (req.auth!.caps.has('node:full_ip')) return peers;
     return peers.map((p) => ({ ...p, ip: maskIp(p.ip) }));
@@ -2740,9 +2784,10 @@ setInterval(() => {
     broadcast(() => ({ type: 'event', event: ev }));
   }
   // 保留策略由设置决定，每次都重新读 —— 管理员改完不用等重启
-  const { metricRetentionHours, auditRetentionDays } = getSettings();
+  const { metricRetentionHours, auditRetentionDays, trafficRetentionDays } = getSettings();
   pruneMetrics(metricRetentionHours);
   pruneAuditLog(auditRetentionDays);
+  pruneTrafficDetail(trafficRetentionDays);
   pruneSessions();
 }, 60_000);
 

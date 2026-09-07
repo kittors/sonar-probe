@@ -31,11 +31,99 @@ Linux 没有现成的"每进程用了多少流量"接口，这里靠三张表拼
 */
 
 type ctFlow struct {
+	// key 是这条连接的稳定标识（协议 + 原始方向四元组）。
+	// 差分要靠它把两拍里的同一条连接对上，所以必须取原始方向 ——
+	// 回复方向的 src/dst 是反过来的，用它当键会让入站和出站各算一条。
+	key       string
 	localPort int
 	peerIP    string
 	peerPort  int
 	rx        uint64 // 本机收到
 	tx        uint64 // 本机发出
+}
+
+/*
+流级差分
+
+conntrack 里的 bytes 是**连接建立以来**的累计值，而且连接关闭后条目会过期消失。
+把这份快照原样当成流量上报，得到的数字和时间没有关系：
+
+  一条挂了三天的长连接，它那 60 GB 会在每一拍里被重复报一遍；
+  一条刚结束的短连接，它的字节数下一拍就彻底不见了。
+
+面板上"近 7 天谁吃了流量"因此只有实际值的百分之几 —— 那不是统计偏差，
+是把瞬时快照当成了区间累计。
+
+这里记住每条连接上一拍的累计值，只产出两拍之间的**增量**。增量是可加的，
+服务端把它累加到当天，才是真正的"今天 nginx 走了多少"。
+
+流消失不会丢账：conntrack 的 TCP 条目在连接关闭后还会保留两分钟，
+而采样是秒级的，消失前的最后一拍早已把它结算干净。
+*/
+type flowBytes struct{ rx, tx uint64 }
+
+type flowTracker struct {
+	seen map[string]flowBytes
+	/*
+	 * 首次采样只建基线，不产出增量。
+
+	 * agent 刚起来时 conntrack 里那些连接可能已经跑了几个小时，
+	 * 把它们的历史累计量当成"这一拍新增的"，会在重启的那一刻
+	 * 凭空多出一大笔流量 —— 而且每次重启都来一次。
+	 */
+	primed bool
+}
+
+func newFlowTracker() *flowTracker { return &flowTracker{seen: map[string]flowBytes{}} }
+
+/*
+跟踪表的条数上限。
+
+nf_conntrack_max 默认能到 26 万，全都记下来要几十 MB —— 探针自己不该是
+机器上最占内存的那个进程。超出后新流既不跟踪也不计入：宁可少算一点，
+也不要为了凑数把某条流的历史累计量当成增量报上去。
+*/
+const maxTrackedFlows = 60_000
+
+// delta 把 conntrack 快照换算成自上一拍以来的增量。
+// 返回的 ctFlow 里 rx/tx 是增量而非累计值，其余字段原样保留。
+func (t *flowTracker) delta(flows []ctFlow) []ctFlow {
+	next := make(map[string]flowBytes, len(flows))
+	out := make([]ctFlow, 0, len(flows))
+
+	for _, f := range flows {
+		cur := flowBytes{rx: f.rx, tx: f.tx}
+		prev, known := t.seen[f.key]
+		if !known && len(next) >= maxTrackedFlows {
+			continue
+		}
+		next[f.key] = cur
+
+		switch {
+		case !known:
+			// 没见过的流：它的累计值就是这一拍新增的，rx/tx 保持原样。
+		case cur.rx < prev.rx || cur.tx < prev.tx:
+			// 计数器往回走，说明这个四元组已经被复用成了另一条连接。
+			// 当成新连接全量计入，比记 0 更接近事实。
+		default:
+			f.rx = cur.rx - prev.rx
+			f.tx = cur.tx - prev.tx
+		}
+
+		if f.rx == 0 && f.tx == 0 {
+			continue
+		}
+		out = append(out, f)
+	}
+
+	// 本拍没出现的流已经消失，不必再占着内存 —— 它们的账在消失前那一拍就结清了
+	t.seen = next
+
+	if !t.primed {
+		t.primed = true
+		return nil
+	}
+	return out
 }
 
 /*
@@ -84,8 +172,10 @@ func lookupPort(live map[int]procRef, port int) (procRef, bool) {
 	return procRef{}, false
 }
 
-func collectAttribution() ([]ServiceTraffic, []PeerTraffic) {
-	flows := readConntrack()
+// collectAttribution 产出自上一拍以来的流量增量，按进程和按对端两个视角各聚合一份。
+// tracker 保存着上一拍的流量累计值，所以采集器必须复用同一个实例。
+func collectAttribution(tracker *flowTracker) ([]ServiceTraffic, []PeerTraffic) {
+	flows := tracker.delta(readConntrack())
 	if len(flows) == 0 {
 		return nil, nil
 	}
@@ -176,10 +266,8 @@ func collectAttribution() ([]ServiceTraffic, []PeerTraffic) {
 	sort.Slice(peerOut, func(i, j int) bool {
 		return peerOut[i].Rx+peerOut[i].Tx > peerOut[j].Rx+peerOut[j].Tx
 	})
-	// 对端可能成千上万，只上报最重的一批，其余对面板没有意义
-	if len(peerOut) > 200 {
-		peerOut = peerOut[:200]
-	}
+	// 这里**不做** top-N 截断。每拍都砍掉尾巴，会让小流量对端在攒批时
+	// 被系统性地漏掉；取前 200 是上报时才该做的事，交给 Peers()。
 
 	return svcOut, peerOut
 }
@@ -243,15 +331,16 @@ func readConntrackFrom(path string, local map[string]bool) []ctFlow {
 		origSrc, origDst := srcs[0], dsts[0]
 		origSport, origDport := sports[0], dpts[0]
 		origBytes, replyBytes := byteCounts[0], byteCounts[1]
+		key := flowKey(protocolOf(fields), origSrc, origSport, origDst, origDport)
 
 		var flow ctFlow
 		switch {
 		case local[origSrc]:
 			// 出站：原始方向是本机发出的
-			flow = ctFlow{localPort: origSport, peerIP: origDst, peerPort: origDport, tx: origBytes, rx: replyBytes}
+			flow = ctFlow{key: key, localPort: origSport, peerIP: origDst, peerPort: origDport, tx: origBytes, rx: replyBytes}
 		case local[origDst]:
 			// 入站：原始方向是对方发过来的
-			flow = ctFlow{localPort: origDport, peerIP: origSrc, peerPort: origSport, rx: origBytes, tx: replyBytes}
+			flow = ctFlow{key: key, localPort: origDport, peerIP: origSrc, peerPort: origSport, rx: origBytes, tx: replyBytes}
 		default:
 			// 转发流量，不是本机自己的连接
 			continue
@@ -264,6 +353,33 @@ func readConntrackFrom(path string, local map[string]bool) []ctFlow {
 		out = append(out, flow)
 	}
 	return out
+}
+
+/*
+protocolOf 取这行的四层协议名。
+
+conntrack 的行首是几个位置固定的裸字段（`ipv4 2 tcp 6 431999 ESTABLISHED …`），
+但不同内核版本给的前缀不一样 —— 有的没有 `ipv4 2` 这两段。所以不按下标取，
+而是在遇到第一个 key=value 之前扫一遍，认已知的协议名。
+
+认不出来时返回 "?"：协议只用来给流的键加一层区分，认不出的那些
+仍然靠四元组区分得开，不值得为此丢掉整条流。
+*/
+func protocolOf(fields []string) string {
+	for _, f := range fields {
+		if strings.ContainsRune(f, '=') {
+			break
+		}
+		switch f {
+		case "tcp", "udp", "udplite", "icmp", "icmpv6", "sctp", "dccp", "gre":
+			return f
+		}
+	}
+	return "?"
+}
+
+func flowKey(proto, src string, sport int, dst string, dport int) string {
+	return proto + "|" + src + ":" + strconv.Itoa(sport) + ">" + dst + ":" + strconv.Itoa(dport)
 }
 
 // localAddresses 收集本机所有网卡地址，用于判断连接方向。

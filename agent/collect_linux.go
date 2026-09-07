@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,11 +26,28 @@ type procCollector struct {
 	prevDiskWr   uint64
 	prevAt       time.Time
 
-	services []ServiceTraffic
-	peers    []PeerTraffic
+	// 归因的流级差分状态。必须跨采样保留，否则每一拍都是"第一次见到"。
+	tracker *flowTracker
+
+	/*
+	 * 待上报的归因增量。
+	 *
+	 * 增量和累计值不同，它是一次性的：这一拍算出来的 nginx 走了 8 MB，
+	 * 只要这次上报没送到，那 8 MB 就再也补不回来了 —— 下一拍 conntrack
+	 * 的累计值已经推进过去了。面板重启、网络抖动都是常态，所以攒着，
+	 * 直到面板确认收下（CommitReported）才清。
+	 */
+	pendingSvc  map[string]*ServiceTraffic
+	pendingPeer map[string]*PeerTraffic
 }
 
-func newCollector() Collector { return &procCollector{} }
+func newCollector() Collector {
+	return &procCollector{
+		tracker:     newFlowTracker(),
+		pendingSvc:  map[string]*ServiceTraffic{},
+		pendingPeer: map[string]*PeerTraffic{},
+	}
+}
 
 // —————————————————————————————————————————————————————————
 // 静态信息
@@ -153,8 +171,8 @@ func (c *procCollector) Sample() (Metric, error) {
 	c.prevDiskRead, c.prevDiskWr = readTotal, writeTotal
 	c.prevAt = now
 
-	// 流量归因比较重，和指标采样一起做，结果缓存到下次上报
-	c.services, c.peers = collectAttribution()
+	// 流量归因比较重，和指标采样一起做。算出的是增量，攒进待上报队列
+	c.stash(collectAttribution(c.tracker))
 
 	return m, nil
 }
@@ -411,18 +429,90 @@ func readTemperature() *float64 {
 	return nil
 }
 
-func (c *procCollector) Services() []ServiceTraffic {
-	if c.services == nil {
-		return []ServiceTraffic{}
+/*
+待上报对端队列的上限。
+
+上报只取最重的 200 个，攒到几千已经远超能送出去的量；留出这个余量是
+为了断连期间新冒出来的大流量对端仍有位置，不至于被一批扫描地址挤掉。
+*/
+const maxPendingPeers = 2000
+
+/*
+stash 把这一拍的增量并进待上报队列。
+
+conns 取两者的较大值而不是相加：它表达的是"同时有多少条连接在跑"，
+攒了十拍就相加的话，一台连接数稳定在 50 的机器会报出 500 —— 而对端
+评分正是按"连接数多、每条流量小"判扫描的，这个虚高会直接变成误封。
+*/
+func (c *procCollector) stash(services []ServiceTraffic, peers []PeerTraffic) {
+	for _, s := range services {
+		cur, ok := c.pendingSvc[s.Service]
+		if !ok {
+			copied := s
+			c.pendingSvc[s.Service] = &copied
+			continue
+		}
+		cur.Rx += s.Rx
+		cur.Tx += s.Tx
+		cur.Conns = maxInt(cur.Conns, s.Conns)
+		cur.Ports = mergeInts(cur.Ports, s.Ports, 8)
+		cur.PIDs = mergeInts(cur.PIDs, s.PIDs, 6)
 	}
-	return c.services
+
+	for _, p := range peers {
+		cur, ok := c.pendingPeer[p.IP]
+		if !ok {
+			/*
+			 * 队列封顶。
+			 *
+			 * 服务名是有界的（一台机器就那几十个进程），对端 IP 不是 ——
+			 * 面板不可达的那几个小时里，一台正在被扫描的机器能攒出几万个地址。
+			 * 上报只取前 200 个，攒得再多也送不出去，只是白占内存。
+			 *
+			 * 满了之后新地址丢弃而不是替换已有的：已有的那些至少积着真实的
+			 * 字节数，新来的往往是扫描器的一次性地址。
+			 */
+			if len(c.pendingPeer) >= maxPendingPeers {
+				continue
+			}
+			copied := p
+			c.pendingPeer[p.IP] = &copied
+			continue
+		}
+		cur.Rx += p.Rx
+		cur.Tx += p.Tx
+		cur.Conns = maxInt(cur.Conns, p.Conns)
+		cur.Ports = mergeInts(cur.Ports, p.Ports, 8)
+	}
+}
+
+func (c *procCollector) Services() []ServiceTraffic {
+	out := make([]ServiceTraffic, 0, len(c.pendingSvc))
+	for _, s := range c.pendingSvc {
+		out = append(out, *s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Rx+out[i].Tx > out[j].Rx+out[j].Tx })
+	return out
 }
 
 func (c *procCollector) Peers() []PeerTraffic {
-	if c.peers == nil {
-		return []PeerTraffic{}
+	out := make([]PeerTraffic, 0, len(c.pendingPeer))
+	for _, p := range c.pendingPeer {
+		out = append(out, *p)
 	}
-	return c.peers
+	sort.Slice(out, func(i, j int) bool { return out[i].Rx+out[i].Tx > out[j].Rx+out[j].Tx })
+	// 对端可能成千上万，只报最重的一批，其余对面板没有意义
+	if len(out) > 200 {
+		out = out[:200]
+	}
+	return out
+}
+
+// CommitReported 在面板收下这批增量之后清空队列。
+// 只有上报确实成功了才能调 —— 清早了就是真丢数据。
+func (c *procCollector) CommitReported() {
+	clear(c.pendingSvc)
+	clear(c.pendingPeer)
 }
 
 // —————————————————————————————————————————————————————————

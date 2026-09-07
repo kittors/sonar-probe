@@ -1,4 +1,4 @@
-import { test, before, after } from 'node:test';
+import { test, before, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,6 +14,19 @@ import { join } from 'node:path';
  * 这里只能用动态 import。
  */
 
+/*
+ * 时钟必须钉死。
+ *
+ * 周期判定问的是"今天是几号"，而 store 里那几个函数取的是真实的 new Date()。
+ * 断言写成 '2026-08-01' 的话，这份测试只在写它的那个月是绿的 —— 事实上
+ * 它就是这么挂的：数据是 8 月的，跑到 9 月周期已经翻页，四条断言集体失败，
+ * 而被测代码一行没动。
+ *
+ * 钉在 8/23 是因为下面的数据落在 8/18 ~ 8/23：既有 21 号之前的，
+ * 也有之后的，账单日切在月中这条路径才走得到。
+ */
+const NOW = new Date('2026-08-23T12:00:00Z');
+
 const GB = 1024 ** 3;
 let dir: string;
 let store: typeof import('./store.js');
@@ -24,6 +37,7 @@ before(async () => {
   process.env.SONAR_DB = join(dir, 'test.db');
   db = (await import('./db.js')).db;
   store = await import('./store.js');
+  mock.timers.enable({ apis: ['Date'], now: NOW });
 
   db.prepare(
     `INSERT INTO nodes (id, name, hostname, ip, traffic_quota, created_at, last_seen, source)
@@ -47,7 +61,10 @@ before(async () => {
   }
 });
 
-after(() => rmSync(dir, { recursive: true, force: true }));
+after(() => {
+  mock.timers.reset();
+  rmSync(dir, { recursive: true, force: true });
+});
 
 test('迁移把新列加上了', () => {
   const cols = (db.prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>).map(

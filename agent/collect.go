@@ -62,6 +62,35 @@ type Collector interface {
 	Services() []ServiceTraffic
 	// Peers 按对端 IP 聚合流量。
 	Peers() []PeerTraffic
+	/*
+	 * CommitReported 由上报方在面板确认收下之后调用，用来清空待上报的归因增量。
+	 *
+	 * Services/Peers 给的是**增量**而不是当前快照，所以取走了不等于送到了：
+	 * 上报失败时那批增量必须留着跟下一拍并起来，否则面板重启的那几十秒里
+	 * 走掉的流量就永远没人认领了。
+	 */
+	CommitReported()
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// mergeInts 求两个已排序整数列表的并集，去重后截到 limit 个。
+// 端口和 PID 攒批时用：一次采样只看得见当时活跃的那几个，
+// 直接覆盖会让界面上的端口列表随每拍跳动。
+func mergeInts(a, b []int, limit int) []int {
+	set := make(map[int]struct{}, len(a)+len(b))
+	for _, v := range a {
+		set[v] = struct{}{}
+	}
+	for _, v := range b {
+		set[v] = struct{}{}
+	}
+	return sortedPorts(set, limit)
 }
 
 // 进程名 → 展示分类。面板用它上色和分组。

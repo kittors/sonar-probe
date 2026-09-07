@@ -441,14 +441,14 @@ function partOfDayElapsed(now: number): number {
   return Math.max(0.02, secs / 86400);
 }
 
-/** 生成对端 IP 的累计流量画像（近 7 天窗口）。 */
+/** 生成对端 IP 的流量画像，摊到近 7 天。 */
 function seedPeers(st: RuntimeState, now: number): void {
   const { seed, profile } = st;
   const rng = new Rng(seed.id + ':peers');
   const ins = db.prepare(`
     INSERT OR REPLACE INTO peer_traffic
-      (node_id,ip,rx,tx,conns,country_code,asn,org,threat_score,threat_reasons,ports,first_seen,last_seen)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      (node_id,day,ip,rx,tx,conns,country_code,asn,org,threat_score,threat_reasons,ports,first_seen,last_seen)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
 
   // 7 天总量作为分摊基数
@@ -484,22 +484,46 @@ function seedPeers(st: RuntimeState, now: number): void {
       tx *= 2.6;
     }
 
-    ins.run(
-      seed.id,
-      peer.ip,
-      Math.round(rx),
-      Math.round(tx),
-      conns,
-      peer.countryCode,
-      peer.asn,
-      peer.org,
-      scoreThreat(peer, conns, rx + tx),
-      JSON.stringify(peer.reasons),
-      JSON.stringify(peer.ports),
-      now - rng.int(2, 30) * DAY_MS,
-      now - rng.int(0, 900) * 1000,
-    );
+    /*
+     * 摊到 7 天，而不是全塞进一行。
+     *
+     * peer_traffic 现在按天分桶，一整周的量堆在今天这一格的话，
+     * 界面上选"近 7 天"和选"今天"会得到同一个数字 —— 演示数据
+     * 首先得让时间范围这个功能看起来是有用的。
+     */
+    const perDay = dayWeights(rng, 7);
+    const score = scoreThreat(peer, conns, rx + tx);
+    const firstSeen = now - rng.int(2, 30) * DAY_MS;
+    const lastSeen = now - rng.int(0, 900) * 1000;
+
+    perDay.forEach((w, back) => {
+      const dayTs = now - back * DAY_MS;
+      ins.run(
+        seed.id,
+        dayKey(dayTs),
+        peer.ip,
+        Math.round(rx * w),
+        Math.round(tx * w),
+        Math.max(1, Math.round(conns * w * perDay.length)),
+        peer.countryCode,
+        peer.asn,
+        peer.org,
+        score,
+        JSON.stringify(peer.reasons),
+        JSON.stringify(peer.ports),
+        firstSeen,
+        // 只有最近那天的 last_seen 是"刚刚"，往前推的几天各自落在当天
+        back === 0 ? lastSeen : dayTs,
+      );
+    });
   });
+}
+
+/** 把 1 拆成 n 份带随机起伏的权重，用于把总量摊到每一天。 */
+function dayWeights(rng: Rng, n: number): number[] {
+  const raw = Array.from({ length: n }, () => rng.float(0.6, 1.4));
+  const sum = raw.reduce((a, b) => a + b, 0);
+  return raw.map((v) => v / sum);
 }
 
 /** 各类对端的连接数下限。滥用型通常是多连接并发，不会只开一条。 */
@@ -577,9 +601,9 @@ const bumpService = () =>
 
 const bumpPeer = () =>
   db.prepare(`
-    INSERT INTO peer_traffic (node_id,ip,rx,tx,conns,country_code,asn,org,threat_score,threat_reasons,ports,first_seen,last_seen)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(node_id,ip) DO UPDATE SET
+    INSERT INTO peer_traffic (node_id,day,ip,rx,tx,conns,country_code,asn,org,threat_score,threat_reasons,ports,first_seen,last_seen)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(node_id,day,ip) DO UPDATE SET
       rx = rx + excluded.rx, tx = tx + excluded.tx, conns = excluded.conns, last_seen = excluded.last_seen
   `);
 
@@ -687,7 +711,7 @@ function distribute(st: RuntimeState, day: string, rxDelta: number, txDelta: num
     const txAdd = probing ? Math.round(conns * rng.float(0.2, 1.6)) : Math.round(txDelta * share);
 
     stmts!.peer.run(
-      seed.id, peer.ip,
+      seed.id, dayKey(now), peer.ip,
       rxAdd, txAdd, conns,
       peer.countryCode, peer.asn, peer.org,
       scoreThreat(peer, conns),

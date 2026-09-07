@@ -890,6 +890,149 @@ body {
   }
 
   /*
+   * 日期范围选择。
+   *
+   * 双月并排 + 左侧快捷项。快捷项列固定宽度，日历区自然宽 —— 让快捷项
+   * 跟着最长的标签伸缩，会在切换机器（账单日不同）时把整个面板挤变形。
+   */
+  .ds-range-trigger {
+    min-width: 190px;
+  }
+
+  .ds-range {
+    display: flex;
+    align-items: stretch;
+    user-select: none;
+  }
+
+  .ds-range-presets {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 104px;
+    flex-shrink: 0;
+    padding: 4px 8px 4px 4px;
+    border-right: 1px solid var(--ds-border);
+  }
+
+  .ds-range-preset {
+    padding: 6px 9px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--ds-text-secondary);
+    font-family: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .ds-range-preset:hover:not(:disabled) {
+    background: var(--ds-bg-hover);
+    color: var(--ds-text-primary);
+  }
+  .ds-range-preset[data-active] {
+    background: var(--ds-bg-active, var(--ds-bg-hover));
+    color: var(--color-brand);
+    font-weight: 600;
+  }
+  .ds-range-preset:disabled {
+    color: var(--ds-text-disabled);
+    cursor: default;
+  }
+
+  .ds-range-cals {
+    flex: 1;
+    min-width: 0;
+    padding: 4px;
+  }
+
+  .ds-range-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+
+  .ds-range-titles {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .ds-range-titles > span {
+    text-align: center;
+  }
+
+  .ds-range-grids {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .ds-range-month {
+    min-width: 0;
+  }
+
+  /*
+   * 区间中段用浅色连成一条，两端才是实心。
+   *
+   * 只把两端标出来的话，跨月选择时中间那一整片没有任何反馈，人看不出
+   * 自己选的是 3 天还是 30 天。圆角只留在区间外侧，中段方角才连得起来。
+   */
+  .ds-range-day[data-in-range] {
+    background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+    color: var(--ds-text-primary);
+    border-radius: 0;
+  }
+  .ds-range-day[data-range-start] {
+    border-radius: 7px 0 0 7px;
+  }
+  .ds-range-day[data-range-end] {
+    border-radius: 0 7px 7px 0;
+  }
+  .ds-range-day:disabled {
+    color: var(--ds-text-disabled);
+    cursor: default;
+  }
+  .ds-range-day:disabled:hover {
+    background: transparent;
+  }
+
+  .ds-range-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-height: 22px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--ds-border);
+  }
+
+  /* 窄屏放不下两个月，退回单列 */
+  @media (max-width: 620px) {
+    .ds-range {
+      flex-direction: column;
+    }
+    .ds-range-presets {
+      flex-direction: row;
+      flex-wrap: wrap;
+      width: auto;
+      padding: 4px;
+      border-right: none;
+      border-bottom: 1px solid var(--ds-border);
+    }
+    .ds-range-titles,
+    .ds-range-grids {
+      grid-template-columns: 1fr;
+    }
+    .ds-range-titles > span:last-child,
+    .ds-range-month:last-child {
+      display: none;
+    }
+  }
+
+  /*
    * 复选框。
    *
    * 原生 input[type=checkbox] 的勾号形状是系统画的，accent-color 只能改颜色 ——

@@ -48,6 +48,4 @@ func (c *stubCollector) Sample() (Metric, error) {
 
 func (c *stubCollector) Services() []ServiceTraffic { return []ServiceTraffic{} }
 func (c *stubCollector) Peers() []PeerTraffic       { return []PeerTraffic{} }
-
-// 归因逻辑同样只在 Linux 上有实现。
-func collectAttribution() ([]ServiceTraffic, []PeerTraffic) { return nil, nil }
+func (c *stubCollector) CommitReported()            {}

@@ -73,6 +73,17 @@ type Report struct {
 	Metric   Metric           `json:"metric"`
 	Services []ServiceTraffic `json:"services,omitempty"`
 	Peers    []PeerTraffic    `json:"peers,omitempty"`
+	/*
+	 * 声明 Services / Peers 里装的是**增量**而不是当前快照。
+	 *
+	 * 这个标记不是冗余信息，它是新旧 agent 的分界线。面板从 0.2.0 起改成累加，
+	 * 而 0.1.0 的 agent 报的是 conntrack 的瞬时快照 —— 那份快照被累加的话，
+	 * 一条挂着的长连接每两秒就把它的历史总量再加一遍，一天能堆出几十 TB。
+	 *
+	 * 所以面板只累加带这个标记的上报；老 agent 的归因数据一律丢弃，
+	 * 宁可那张排行榜是空的，也不能让它显示一个假的天文数字。
+	 */
+	AttributionDelta bool `json:"attributionDelta,omitempty"`
 	// 每机独立密钥。注册时由面板下发，没带就只能上报、拿不到下发指令
 	Secret string `json:"secret,omitempty"`
 	// SSH 实况。采不到时整块省略，面板据此区分"没有钥匙"和"采不到"

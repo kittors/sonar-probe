@@ -16,7 +16,7 @@ const BINARY_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'] as const;
  * 之后同一次渲染里的所有调用都用同一套口径。
  */
 let display = {
-  byteBase: 1024 as 1024 | 1000,
+  byteBase: 1000 as 1024 | 1000,
   binaryUnitLabels: false,
   timezone: 'UTC',
   expiryWarnDays: 7,

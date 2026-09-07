@@ -5,6 +5,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +83,150 @@ func TestReadConntrackMissingFile(t *testing.T) {
 	flows := readConntrackFrom("/nonexistent/nf_conntrack", map[string]bool{})
 	if flows != nil {
 		t.Fatalf("文件不存在时应返回 nil，实际 %+v", flows)
+	}
+}
+
+// —————————————————————————————————————————————————————————
+// 流级差分
+//
+// 这组测试守着面板上"流量都被谁吃了"的正确性。改坏了不会报错，
+// 只会让那张排行榜安静地少算 —— 上线前实测过一次：覆盖率只有真实流量的 4%。
+// —————————————————————————————————————————————————————————
+
+func flowsAt(rx, tx uint64) []ctFlow {
+	return []ctFlow{{key: "tcp|a:1>b:2", localPort: 1, peerIP: "b", rx: rx, tx: tx}}
+}
+
+func TestFlowTrackerPrimesWithoutEmitting(t *testing.T) {
+	tr := newFlowTracker()
+
+	// 第一拍只建基线。conntrack 里的连接可能已经跑了几小时，
+	// 把那份历史累计量当成增量，agent 每次重启都会凭空多报一大笔。
+	if got := tr.delta(flowsAt(1_000_000, 2_000_000)); len(got) != 0 {
+		t.Fatalf("首拍应只建基线，实际产出了 %d 条: %+v", len(got), got)
+	}
+
+	got := tr.delta(flowsAt(1_000_500, 2_000_300))
+	if len(got) != 1 {
+		t.Fatalf("第二拍应产出 1 条增量，实际 %d 条", len(got))
+	}
+	if got[0].rx != 500 || got[0].tx != 300 {
+		t.Errorf("增量应为 rx=500 tx=300，实际 rx=%d tx=%d", got[0].rx, got[0].tx)
+	}
+}
+
+func TestFlowTrackerCountsNewFlowInFull(t *testing.T) {
+	tr := newFlowTracker()
+	tr.delta(nil) // 建基线
+
+	// 基线之后才出现的连接，它的累计值整个都是这段时间新增的
+	got := tr.delta(flowsAt(4096, 8192))
+	if len(got) != 1 || got[0].rx != 4096 || got[0].tx != 8192 {
+		t.Fatalf("新流应全量计入，实际 %+v", got)
+	}
+}
+
+func TestFlowTrackerHandlesPortReuse(t *testing.T) {
+	tr := newFlowTracker()
+	tr.delta(flowsAt(900_000, 900_000))
+
+	// 计数器往回走，说明这个四元组已经被复用成另一条连接。
+	// 记 0 会把新连接走过的量整个吞掉，全量计入才接近事实。
+	got := tr.delta(flowsAt(1500, 700))
+	if len(got) != 1 || got[0].rx != 1500 || got[0].tx != 700 {
+		t.Fatalf("端口复用应按新连接全量计入，实际 %+v", got)
+	}
+}
+
+func TestFlowTrackerDropsVanishedFlows(t *testing.T) {
+	tr := newFlowTracker()
+	tr.delta(flowsAt(100, 100))
+	tr.delta(nil) // 连接消失，跟踪表应随之清空
+
+	if len(tr.seen) != 0 {
+		t.Errorf("消失的流不该继续占内存，实际还留着 %d 条", len(tr.seen))
+	}
+
+	// 同一个四元组重新出现时是一条全新的连接，不该拿旧基线去减
+	got := tr.delta(flowsAt(60, 40))
+	if len(got) != 1 || got[0].rx != 60 || got[0].tx != 40 {
+		t.Fatalf("重现的四元组应按新连接计入，实际 %+v", got)
+	}
+}
+
+func TestFlowTrackerSkipsIdleFlows(t *testing.T) {
+	tr := newFlowTracker()
+	tr.delta(flowsAt(5000, 5000))
+
+	// 这一拍一个字节都没走的连接不必上报，否则排行榜里全是 0
+	if got := tr.delta(flowsAt(5000, 5000)); len(got) != 0 {
+		t.Fatalf("无增量的流不该产出，实际 %+v", got)
+	}
+	// 但基线要留着，下一拍才减得对
+	if len(tr.seen) != 1 {
+		t.Errorf("无增量不代表流消失了，跟踪表应保留，实际 %d 条", len(tr.seen))
+	}
+}
+
+func TestFlowTrackerCapsMemory(t *testing.T) {
+	tr := newFlowTracker()
+	tr.delta(nil)
+
+	over := make([]ctFlow, maxTrackedFlows+500)
+	for i := range over {
+		over[i] = ctFlow{key: "tcp|a:" + strconv.Itoa(i) + ">b:2", rx: 10, tx: 10}
+	}
+	got := tr.delta(over)
+
+	// 超出上限的流既不跟踪也不计入 —— 宁可少算，也不能把某条流的
+	// 历史累计量当成增量报上去
+	if len(tr.seen) > maxTrackedFlows {
+		t.Errorf("跟踪表应封顶在 %d，实际 %d", maxTrackedFlows, len(tr.seen))
+	}
+	if len(got) > maxTrackedFlows {
+		t.Errorf("产出也应封顶在 %d，实际 %d", maxTrackedFlows, len(got))
+	}
+}
+
+func TestFlowKeyDistinguishesDirection(t *testing.T) {
+	// 键必须取原始方向。用"本地端口 + 对端"当键的话，同一台机器上
+	// 一进一出两条连接会撞成一条，其中一条的流量就被另一条吃掉了。
+	a := flowKey("tcp", "10.0.0.1", 5000, "1.2.3.4", 443)
+	b := flowKey("tcp", "1.2.3.4", 443, "10.0.0.1", 5000)
+	if a == b {
+		t.Errorf("两个方向的键不该相同：%q", a)
+	}
+	// 协议也要进键：TCP 和 UDP 用同一个四元组是合法的
+	if flowKey("tcp", "a", 1, "b", 2) == flowKey("udp", "a", 1, "b", 2) {
+		t.Error("TCP 和 UDP 的同一四元组不该撞键")
+	}
+}
+
+func TestProtocolOf(t *testing.T) {
+	cases := map[string]string{
+		"ipv4     2 tcp      6 431999 ESTABLISHED src=a": "tcp",
+		"ipv4     2 udp      17 29 src=a":                "udp",
+		// 有的内核不输出 L3 前缀，不能按下标取
+		"tcp      6 120 SYN_SENT src=a": "tcp",
+		// 认不出协议也不该丢流，四元组本身还区分得开
+		"weird 1 2 src=a": "?",
+	}
+	for line, want := range cases {
+		if got := protocolOf(strings.Fields(line)); got != want {
+			t.Errorf("protocolOf(%q) = %q，期望 %q", line, got, want)
+		}
+	}
+}
+
+func TestMergeInts(t *testing.T) {
+	// 攒批时端口要取并集：一次采样只看得见当时活跃的那几个，
+	// 直接覆盖会让界面上的端口列表随每拍跳动
+	got := mergeInts([]int{443, 80}, []int{80, 8080}, 8)
+	if len(got) != 3 || got[0] != 80 || got[1] != 443 || got[2] != 8080 {
+		t.Errorf("并集应为 [80 443 8080]，实际 %v", got)
+	}
+	if len(mergeInts([]int{1, 2, 3}, []int{4, 5, 6}, 4)) != 4 {
+		t.Error("应截到 limit 个")
 	}
 }
 

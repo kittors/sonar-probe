@@ -32,6 +32,15 @@ import {
   threatLabel,
 } from '../components/charts/chart-utils';
 import { BlockDialog } from '../components/BlockDialog';
+import {
+  DateRangePicker,
+  dayCount,
+  isSameRange,
+  lastNDays,
+  sinceDay,
+  type Range as DayRange,
+  type RangePreset,
+} from '../components/DateRangePicker';
 import { NodeEditDialog } from '../components/NodeEditDialog';
 import { CountryBadge } from '../components/CountryBadge';
 import { Tooltip } from '../components/Tooltip';
@@ -53,7 +62,8 @@ import {
   IconWifiOff,
 } from '../components/icons';
 
-type Range = '15m' | '1h' | '6h' | '24h';
+/** 负载曲线的时间窗，和流量的日期区间是两码事，别混用一个名字 */
+type MetricRange = '15m' | '1h' | '6h' | '24h';
 type Tab = 'load' | 'traffic' | 'security';
 
 /**
@@ -76,23 +86,58 @@ export function NodeDetail() {
 
   const [tab, setTab] = useState<Tab>('load');
   const [editing, setEditing] = useState(false);
-  const [range, setRange] = useState<Range>('1h');
-  const [trafficDays, setTrafficDays] = useState<7 | 14 | 30>(30);
+  const [range, setRange] = useState<MetricRange>('1h');
   const [blockTarget, setBlockTarget] = useState<PeerTraffic | null>(null);
+
+  /*
+   * 流量的日期区间。三张流量卡片共用它。
+   *
+   * 默认落在**当前计费周期**而不是"近 30 天"：人打开这一页最常问的是
+   * "这个周期还剩多少配额"，而周期起点取决于账单日，跟自然月往往对不上。
+   * cycleStart 要等 WebSocket 推来第一帧才有，所以先用近 30 天兜着，
+   * 拿到之后再切过去（下面那个 effect）。
+   */
+  const [trafficRange, setTrafficRange] = useState<DayRange>(() => lastNDays(30));
+  const [rangePinned, setRangePinned] = useState(false);
+  const cycleStart = node?.cycleStart;
+
+  useEffect(() => {
+    // 人一旦自己选过区间，就不要再被这里覆盖掉
+    if (rangePinned || !cycleStart) return;
+    setTrafficRange(sinceDay(cycleStart));
+  }, [cycleStart, rangePinned]);
+
+  const pickRange = (r: DayRange) => {
+    setRangePinned(true);
+    setTrafficRange(r);
+  };
+
+  /** 快捷项。"本周期"没拿到账单日之前是灰的，不假装它可用 */
+  const presets = useMemo<RangePreset[]>(
+    () => [
+      { key: 'cycle', label: '本周期', range: () => (cycleStart ? sinceDay(cycleStart) : null) },
+      { key: '7d', label: '近 7 天', range: () => lastNDays(7) },
+      { key: '14d', label: '近 14 天', range: () => lastNDays(14) },
+      { key: '30d', label: '近 30 天', range: () => lastNDays(30) },
+      { key: '90d', label: '近 90 天', range: () => lastNDays(90) },
+    ],
+    [cycleStart],
+  );
+  const activePreset = presets.find((p) => isSameRange(trafficRange, p.range()))?.key;
 
   // 没权限的接口干脆不发请求 —— 发了也是 403，白白在控制台刷一片红
   const metrics = useAsync(() => api.metrics(id!, range), [id, range]);
   const daily = useAsync(
-    () => (can('traffic:daily') ? api.dailyTraffic(id!, trafficDays) : Promise.resolve([])),
-    [id, trafficDays],
+    () => (can('traffic:daily') ? api.dailyTraffic(id!, trafficRange) : Promise.resolve([])),
+    [id, trafficRange],
   );
   const services = useAsync(
-    () => (can('traffic:services') ? api.serviceTraffic(id!, 7) : Promise.resolve([])),
-    [id],
+    () => (can('traffic:services') ? api.serviceTraffic(id!, trafficRange) : Promise.resolve([])),
+    [id, trafficRange],
   );
   const peers = useAsync(
-    () => (can('traffic:peers') ? api.peerTraffic(id!, 40) : Promise.resolve([])),
-    [id],
+    () => (can('traffic:peers') ? api.peerTraffic(id!, trafficRange, 40) : Promise.resolve([])),
+    [id, trafficRange],
   );
   const blocks = useAsync(() => (can('block:view') ? api.blocks(id!) : Promise.resolve([])), [id]);
 
@@ -598,18 +643,15 @@ export function NodeDetail() {
           title="流量消耗"
           subtitle={
             daily.data
-              ? `近 ${trafficDays} 天合计 ${bytes(daily.data.reduce((a, d) => a + d.rx + d.tx, 0))}`
+              ? `${rangeLabel(trafficRange, activePreset)} · 合计 ${bytes(daily.data.reduce((a, d) => a + d.rx + d.tx, 0))}`
               : '加载中'
           }
           actions={
-            <Segmented
-              value={String(trafficDays) as '7' | '14' | '30'}
-              onChange={(v) => setTrafficDays(Number(v) as 7 | 14 | 30)}
-              options={[
-                { value: '7', label: '7 天' },
-                { value: '14', label: '14 天' },
-                { value: '30', label: '30 天' },
-              ]}
+            <DateRangePicker
+              value={trafficRange}
+              onChange={pickRange}
+              presets={presets}
+              activePreset={activePreset}
             />
           }
         >
@@ -679,13 +721,19 @@ export function NodeDetail() {
         {can('traffic:services') && (
           <SectionCard
             title="流量都被谁吃了"
-            subtitle="按进程/服务归因，近 7 天"
+            subtitle={`按进程/服务归因 · ${rangeLabel(trafficRange, activePreset)}`}
             actions={<IconLayers size={14} style={{ color: 'var(--ds-text-description)' }} />}
           >
             {services.loading && !services.data ? (
               <Skeleton height={220} />
             ) : (
-              <ServiceBreakdown data={services.data ?? []} />
+              <>
+                <AttributionCoverage
+                  attributed={(services.data ?? []).reduce((a, s) => a + s.rx + s.tx, 0)}
+                  total={(daily.data ?? []).reduce((a, d) => a + d.rx + d.tx, 0)}
+                />
+                <ServiceBreakdown data={services.data ?? []} />
+              </>
             )}
           </SectionCard>
         )}
@@ -700,13 +748,23 @@ export function NodeDetail() {
           className="ds-animate-in"
           style={{ marginBottom: 16, animationDelay: '190ms' }}
           title="对端 IP 流量"
-          subtitle="按累计流量排序，可直接对可疑来源下封禁"
+          subtitle={`${rangeLabel(trafficRange, activePreset)} · 按累计流量排序，可直接对可疑来源下封禁`}
           padded={false}
           actions={
-            <span className="ds-chip">
-              <IconGlobe size={11} />
-              {peers.data?.length ?? 0} 个来源
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="ds-chip">
+                <IconGlobe size={11} />
+                {peers.data?.length ?? 0} 个来源
+              </span>
+              {/* 和流量页共用同一个区间。两边各管各的话，
+                  "谁吃了流量"和"谁连过来"就对不上账了 */}
+              <DateRangePicker
+                value={trafficRange}
+                onChange={pickRange}
+                presets={presets}
+                activePreset={activePreset}
+              />
+            </div>
           }
         >
           {peers.loading && !peers.data ? (
@@ -1018,6 +1076,62 @@ function ChartBlock({
         </span>
       </div>
       {children}
+    </div>
+  );
+}
+
+/** 卡片副标题里那句区间描述。命中快捷项就用它的说法，比两个日期好读 */
+function rangeLabel(r: DayRange, preset: string | undefined): string {
+  if (preset === 'cycle') return '本周期';
+  if (preset) return `近 ${dayCount(r)} 天`;
+  return `${r.from.slice(5)} 至 ${r.to.slice(5)}`;
+}
+
+/**
+ * 归因覆盖率。
+ *
+ * 归因永远不会等于总量：conntrack 跟不到的流量（没开 accounting 的那段时间、
+ * 表满被丢弃的条目、非 IP 流量）落不进任何一个进程名下。把这个差额明说出来，
+ * 是因为不说的话，人只能默认排行榜就是全部 —— 上一版归因只覆盖了 4% 的真实流量，
+ * 而界面上没有任何地方透露过这件事，于是它安静地错了很久。
+ */
+function AttributionCoverage({ attributed, total }: { attributed: number; total: number }) {
+  if (total <= 0 || attributed <= 0) return null;
+  // ratio 是 0-100 并且封顶在 100 —— 归因可能因为取整或采样边界
+  // 略微超过总量，那时说"102%"只会让人怀疑别的地方也算错了
+  const pct = ratio(attributed, total);
+  const low = pct < 60;
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: 6,
+        marginBottom: 12,
+        paddingBottom: 11,
+        borderBottom: '1px solid var(--ds-border)',
+      }}
+    >
+      <span className="ds-text-xs text-ds-description">已归因</span>
+      <span className="tnum ds-text-body-sm" style={{ fontWeight: 600 }}>
+        {bytes(attributed)}
+      </span>
+      <span className="ds-text-xs text-ds-description">
+        / {bytes(total)} · {percent(pct, 0)}
+      </span>
+      {low && (
+        <Tooltip
+          content={
+            '这段时间里有相当一部分流量没能落到具体进程上。常见原因：nf_conntrack_acct 没开、' +
+            'agent 不是 root 跑的（读不到别的进程的 socket）、或者这段区间里 agent 有过掉线。'
+          }
+        >
+          <span className="ds-chip" style={{ color: 'var(--color-warn)' }}>
+            覆盖偏低
+          </span>
+        </Tooltip>
+      )}
     </div>
   );
 }

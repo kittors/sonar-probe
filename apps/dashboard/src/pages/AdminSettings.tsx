@@ -739,6 +739,16 @@ function RetentionSection({ draft, set, editable }: SectionProps) {
           editable={editable}
           hint="0 表示永久保留。每次浏览都会落一行，常看的面板一年能攒几十万条"
         />
+        <NumberField
+          label="流量归因明细"
+          value={draft.trafficRetentionDays}
+          onChange={(v) => set('trafficRetentionDays', v)}
+          suffix="天"
+          min={0}
+          max={3650}
+          editable={editable}
+          hint="0 表示永久保留。指按服务、按对端拆分的那两张表；日流量总账不受影响，一直留着"
+        />
       </FieldRow>
 
       <p className="ds-text-caption" style={{ margin: '14px 0 0', color: 'var(--color-warn)', lineHeight: 1.7 }}>

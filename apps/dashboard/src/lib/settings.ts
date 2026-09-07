@@ -55,7 +55,7 @@ const FALLBACK: PublicSettings = {
   panelTagline: '服务器探针',
   displayCurrency: 'USD',
   costIncludeExpired: false,
-  byteBase: 1024,
+  byteBase: 1000,
   binaryUnitLabels: false,
   trafficDirection: 'both',
   timezone: 'UTC',

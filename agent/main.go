@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type config struct {
 	panel    string
@@ -219,26 +219,34 @@ func runOnce(collector Collector) {
 	if err != nil {
 		log.Fatalf("采集静态信息失败：%v", err)
 	}
-	// 速率类指标需要两次采样才有意义，这里先热身一拍
+	/*
+	 * 速率和归因都需要两次采样才有意义，这里先热身一拍。
+	 *
+	 * 窗口取 3 秒而不是 1 秒：归因报的是**两拍之间的增量**，窗口太短时
+	 * 一台空闲机器很可能一个字节都没走，打出一片 0，看的人会以为归因坏了。
+	 */
 	if _, err := collector.Sample(); err != nil {
 		log.Fatalf("采集失败：%v", err)
 	}
-	time.Sleep(time.Second)
+	const window = 3 * time.Second
+	time.Sleep(window)
 	m, err := collector.Sample()
 	if err != nil {
 		log.Fatalf("采集失败：%v", err)
 	}
 
+	services := collector.Services()
 	out, _ := json.MarshalIndent(map[string]any{
 		"node":     info,
 		"metric":   m,
-		"services": collector.Services(),
+		"services": services,
 		"peers":    collector.Peers(),
 	}, "", "  ")
 	fmt.Println(string(out))
 
-	if len(collector.Services()) == 0 {
-		fmt.Fprintln(os.Stderr, "\n提示：服务与对端流量为空。请确认以下两点：")
+	fmt.Fprintf(os.Stderr, "\n注：services / peers 里的 rx、tx 是这 %s 内新增的流量，不是累计值。\n", window)
+	if len(services) == 0 {
+		fmt.Fprintln(os.Stderr, "服务与对端流量为空。先确认这两点，都满足的话就是这几秒里确实没有流量：")
 		fmt.Fprintln(os.Stderr, "  1. sysctl -w net.netfilter.nf_conntrack_acct=1")
 		fmt.Fprintln(os.Stderr, "  2. agent 以 root 运行（否则读不到其他进程的 /proc/<pid>/fd）")
 	}
@@ -301,6 +309,8 @@ func reportOnce(ctx context.Context, cfg config, collector Collector) ([]Command
 		Metric:   m,
 		Services: collector.Services(),
 		Peers:    collector.Peers(),
+		// 告诉面板这批归因是增量，可以累加。见 Report.AttributionDelta
+		AttributionDelta: true,
 	}
 
 	if time.Since(lastSSHFacts) >= sshFactsInterval {
@@ -309,7 +319,6 @@ func reportOnce(ctx context.Context, cfg config, collector Collector) ([]Command
 		// 后者绝不能显示成 0 把，那是最危险的误判
 		if facts.SSHDVersion != "" || len(facts.Keys) > 0 || len(facts.HostKeys) > 0 {
 			payload.SSH = &facts
-			lastSSHFacts = time.Now()
 		}
 	}
 
@@ -317,7 +326,15 @@ func reportOnce(ctx context.Context, cfg config, collector Collector) ([]Command
 		Commands []Command `json:"commands"`
 	}
 	if err := postJSON(ctx, cfg.panel+"/api/agent/report", payload, &resp); err != nil {
+		// 这批归因增量留在队列里，跟下一拍并起来重发。
+		// 清早了就是真丢数据 —— 增量不像累计值，下一拍补不回来。
 		return nil, err
+	}
+	collector.CommitReported()
+
+	// SSH 实况同理：上报成功了才推进计时，否则一次失败就要再等满一分钟
+	if payload.SSH != nil {
+		lastSSHFacts = time.Now()
 	}
 	return resp.Commands, nil
 }

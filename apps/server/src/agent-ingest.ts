@@ -63,6 +63,12 @@ export interface AgentReport {
   metric: Partial<Metric>;
   services?: AgentServiceTraffic[];
   peers?: AgentPeerTraffic[];
+  /**
+   * services / peers 里装的是增量而非当前快照。0.2.0 起的 agent 才会带。
+   *
+   * 没带这个标记的上报，归因部分会被丢弃 —— 详见 ingestReport 里的说明。
+   */
+  attributionDelta?: boolean;
   /** 每机独立密钥。没带就只能上报，拿不到下发指令 */
   secret?: string;
   /** SSH 实况，老 agent 不带这一段 */
@@ -334,39 +340,97 @@ export function ingestReport(report: AgentReport, remoteIp: string): void {
     }
     lastTotals.set(nodeId, { rx: rxTotal, tx: txTotal });
 
-    // —— 服务归因：覆盖写当天的快照
-    if (report.services?.length) {
+    /*
+     * —— 服务归因：累加到当天
+     *
+     * agent 报的是**自上一拍以来的增量**，所以这里累加而不是覆盖。
+     * 旧版是整天覆盖写 conntrack 快照，那样存下来的是"当天最后一刻还活跃的
+     * 连接累计了多少"，跟"今天这个服务走了多少"是两码事 —— 实测只有 4%。
+     *
+     * conns 取较大值：它是"同时有多少条连接"，累加的话一天下来能有几十万。
+     * 端口和 PID 取并集：一次上报只看得见那一拍活跃的几个，直接覆盖会让
+     * 界面上的端口列表每隔两秒跳一次。
+     */
+    /*
+     * 老 agent 的归因数据必须丢掉，不能累加。
+     *
+     * 0.1.0 报的是 conntrack 的**当前快照**：一条挂了三天的长连接，它那 60 GB
+     * 会出现在每一拍里。按累加口径收下来，两秒一次、一天四万多拍，
+     * 排行榜上会长出几十 TB —— 一个一眼假、却又足以让人对整个面板失去信任的数字。
+     *
+     * 宁可那张排行榜是空的：空的会让人去查为什么，假的不会。
+     */
+    const deltaMode = report.attributionDelta === true;
+    if (!deltaMode && (report.services?.length || report.peers?.length)) {
+      warnSnapshotAgent(nodeId, now);
+    }
+
+    if (deltaMode && report.services?.length) {
       const day = nowDay(now);
-      db.prepare('DELETE FROM service_traffic WHERE node_id=? AND day=?').run(nodeId, day);
       const ins = db.prepare(`
         INSERT INTO service_traffic (node_id,day,service,category,rx,tx,conns,ports,pids)
         VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(node_id,day,service) DO UPDATE SET
+          category = excluded.category,
+          rx       = rx + excluded.rx,
+          tx       = tx + excluded.tx,
+          conns    = MAX(conns, excluded.conns),
+          ports    = ?,
+          pids     = ?
       `);
+      const prior = priorLists(
+        'SELECT service AS k, ports, pids FROM service_traffic WHERE node_id=? AND day=?',
+        nodeId, day,
+      );
       for (const s of report.services.slice(0, 60)) {
+        const name = String(s.service).slice(0, 64);
+        const was = prior.get(name);
+        const ports = JSON.stringify(mergeInts(was?.ports, s.ports, 8));
+        const pids = JSON.stringify(mergeInts(was?.pids, s.pids, 6));
         ins.run(
-          nodeId, day, String(s.service).slice(0, 64), s.category ?? 'other',
+          nodeId, day, name, s.category ?? 'other',
           int(s.rx), int(s.tx), int(s.conns),
-          JSON.stringify((s.ports ?? []).slice(0, 8)),
-          JSON.stringify((s.pids ?? []).slice(0, 6)),
+          ports, pids,
+          ports, pids,
         );
       }
     }
 
-    // —— 对端流量：同样覆盖写
-    if (report.peers?.length) {
-      db.prepare('DELETE FROM peer_traffic WHERE node_id=?').run(nodeId);
+    /*
+     * —— 对端流量：同样累加，同样按天分桶
+     *
+     * 威胁分取当天见过的最高分：一个地址上午扫过端口、下午安静下来，
+     * 不该因为最后一拍很干净就把那次扫描从记录里抹掉。
+     */
+    if (deltaMode && report.peers?.length) {
+      const day = nowDay(now);
       const ins = db.prepare(`
-        INSERT INTO peer_traffic (node_id,ip,rx,tx,conns,country_code,asn,org,threat_score,threat_reasons,ports,first_seen,last_seen)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO peer_traffic (node_id,day,ip,rx,tx,conns,country_code,asn,org,threat_score,threat_reasons,ports,first_seen,last_seen)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(node_id,day,ip) DO UPDATE SET
+          rx        = rx + excluded.rx,
+          tx        = tx + excluded.tx,
+          conns     = MAX(conns, excluded.conns),
+          ports     = ?,
+          last_seen = excluded.last_seen,
+          threat_score   = MAX(threat_score, excluded.threat_score),
+          threat_reasons = CASE WHEN excluded.threat_score >= threat_score
+                                THEN excluded.threat_reasons ELSE threat_reasons END
       `);
+      const prior = priorLists(
+        'SELECT ip AS k, ports FROM peer_traffic WHERE node_id=? AND day=?',
+        nodeId, day,
+      );
       for (const p of report.peers.slice(0, 200)) {
+        const ip = String(p.ip).slice(0, 45);
         const scored = scorePeer(p);
+        const ports = JSON.stringify(mergeInts(prior.get(ip)?.ports, p.ports, 8));
         ins.run(
-          nodeId, String(p.ip).slice(0, 45), int(p.rx), int(p.tx), int(p.conns),
+          nodeId, day, ip, int(p.rx), int(p.tx), int(p.conns),
           'XX', 0, '',
           scored.score, JSON.stringify(scored.reasons),
-          JSON.stringify((p.ports ?? []).slice(0, 8)),
-          now, now,
+          ports, now, now,
+          ports,
         );
       }
     }
@@ -419,6 +483,70 @@ function scorePeer(p: AgentPeerTraffic): { score: number; reasons: string[] } {
   }
 
   return { score: Math.min(99, score), reasons };
+}
+
+/**
+ * 提示某台机器的 agent 还在报快照。
+ *
+ * 上报是两秒一次，不节流的话事件流会被同一句话填满，反而没人看得见。
+ * 只记在内存里：面板重启后再提醒一次是可以接受的，为此加张表不值得。
+ */
+const snapshotAgentWarnedAt = new Map<string, number>();
+const SNAPSHOT_WARN_INTERVAL = 6 * 3600_000;
+
+function warnSnapshotAgent(nodeId: string, now: number): void {
+  const last = snapshotAgentWarnedAt.get(nodeId) ?? 0;
+  if (now - last < SNAPSHOT_WARN_INTERVAL) return;
+  snapshotAgentWarnedAt.set(nodeId, now);
+  logEvent(
+    nodeId,
+    'warn',
+    'agent',
+    '采集端版本过旧，流量归因已暂停统计：它报的是连接快照而非增量，累加会得出严重偏高的数字。升级到 0.2.0 及以上即可恢复。',
+  );
+}
+
+/**
+ * 取当天已经记下的端口/PID 列表，用来跟这一拍的并起来。
+ *
+ * 累加模式下每拍只看得见那一瞬间活跃的端口，直接覆盖的话，
+ * 界面上「nginx · 端口 80, 443, 32990…」这一串会每两秒变一次样。
+ * 一次上报最多读 60（服务）或 200（对端）行，都是主键前缀命中。
+ */
+function priorLists(
+  sql: string,
+  nodeId: string,
+  day: string,
+): Map<string, { ports: number[]; pids: number[] }> {
+  const out = new Map<string, { ports: number[]; pids: number[] }>();
+  const rows = db.prepare(sql).all(nodeId, day) as Array<{
+    k: string;
+    ports?: string;
+    pids?: string;
+  }>;
+  for (const r of rows) {
+    out.set(r.k, { ports: parseIntList(r.ports), pids: parseIntList(r.pids) });
+  }
+  return out;
+}
+
+function parseIntList(raw: unknown): number[] {
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((n) => Number.isInteger(n)) : [];
+  } catch {
+    // 早期版本写进去的脏数据不该让整次上报失败
+    return [];
+  }
+}
+
+/** 两个整数列表求并集，排序去重后截到 limit 个。 */
+function mergeInts(a: number[] | undefined, b: number[] | undefined, limit: number): number[] {
+  const set = new Set<number>();
+  for (const v of a ?? []) set.add(v);
+  for (const v of b ?? []) if (Number.isInteger(v)) set.add(v);
+  return [...set].sort((x, y) => x - y).slice(0, limit);
 }
 
 function num(v: unknown): number {

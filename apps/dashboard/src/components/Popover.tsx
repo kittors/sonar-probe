@@ -56,6 +56,11 @@ export function useAnchoredPosition(
    * 面板渲染出来后把量到的高度回传，位置按真实值重算。
    */
   actualHeight?: number,
+  /**
+   * 面板宽度。浮层比锚点宽时**必须**传，否则右边界夹不住，面板会溢出视口。
+   * 不传就按锚点宽度算（下拉那种同宽的场景）。
+   */
+  panelWidth?: number,
 ): PopoverPos | null {
   const [pos, setPos] = useState<PopoverPos | null>(null);
 
@@ -72,8 +77,18 @@ export function useAnchoredPosition(
       const vh = window.innerHeight;
       const vw = window.innerWidth;
 
-      const width = r.width;
-      const left = Math.min(Math.max(EDGE, r.left), vw - width - EDGE);
+      /*
+       * 右边界要按**面板**的宽度夹，不是锚点的宽度。
+       *
+       * 原来这里用的是 r.width（锚点宽度）。浮层跟锚点同宽时看不出问题，
+       * 一旦浮层更宽 —— 双月日历有 528px，而它的触发器只有 190px ——
+       * 夹取就形同虚设，面板整个右半边溢出视口被裁掉。
+       *
+       * 不给 panelWidth 的调用方仍按锚点宽度算，那是它们本来的行为。
+       */
+      const width = panelWidth ?? r.width;
+      // 面板比视口还宽时，Math.min 会算出负数把它推到左边界外
+      const left = Math.max(EDGE, Math.min(r.left, vw - width - EDGE));
 
       if (mode === 'fit') {
         const h = actualHeight ?? desiredHeight;
@@ -108,7 +123,7 @@ export function useAnchoredPosition(
       window.removeEventListener('scroll', compute, true);
       window.removeEventListener('resize', compute);
     };
-  }, [anchorRef, open, desiredHeight, mode, actualHeight]);
+  }, [anchorRef, open, desiredHeight, mode, actualHeight, panelWidth]);
 
   return pos;
 }

@@ -139,6 +139,13 @@ export interface Settings {
   metricRetentionHours: number;
   /** 审计日志保留多少天。0 表示永久保留 */
   auditRetentionDays: number;
+  /**
+   * 流量归因明细（按服务、按对端）保留多少天。0 表示永久保留。
+   *
+   * 归因是累加的，只增不减：每机每天最多 60 个服务 + 200 个对端。
+   * 日流量总账不受这一项影响，它每机每天只有一行，一直留着。
+   */
+  trafficRetentionDays: number;
 
   // —— SSH
   /**
@@ -164,9 +171,19 @@ export const DEFAULT_SETTINGS: Settings = {
   rateOverrides: {},
   costIncludeExpired: false,
 
-  // 进制、时区这几项的默认值刻意保持面板原有行为。
-  // 升级一次面板就让所有历史数字变个样，比默认值不够贴心糟糕得多。
-  byteBase: 1024,
+  /*
+   * 进制默认 1000，对齐服务商账单。
+   *
+   * 这一项原先是 1024，理由是"别让升级改变既有显示"。实践下来那个理由站不住：
+   * 1024 进制配上默认关闭的 binaryUnitLabels，面板会把 GiB 印成 "GB" ——
+   * 一台机器面板上写 315 GB、服务商后台写 328.26 GB，两个数字单位不同却
+   * 长得一模一样，人只会得出"探针算错了"的结论，然后花一晚上找不存在的 bug。
+   * （实测就是这么一回事：那两个数字背后是同一个 338,579,939,704 字节。）
+   *
+   * 这个面板的用途就是跟服务商对账，账单口径才是唯一有意义的口径。
+   * 显式保存过设置的部署不受影响 —— 只有从没动过这一项的才会切过来。
+   */
+  byteBase: 1000,
   binaryUnitLabels: false,
   trafficDirection: 'both',
 
@@ -183,6 +200,8 @@ export const DEFAULT_SETTINGS: Settings = {
 
   metricRetentionHours: 26,
   auditRetentionDays: 90,
+  // 半年足够覆盖"上个季度这台机器在跑什么"这类回溯，再往前没人查
+  trafficRetentionDays: 180,
 
   /*
    * 审批默认关闭。
@@ -272,6 +291,7 @@ export function sanitizeSettings(patch: Partial<Settings>, base: Settings = DEFA
 
     metricRetentionHours: clampNum(p.metricRetentionHours, base.metricRetentionHours, 2, 720),
     auditRetentionDays: clampNum(p.auditRetentionDays, base.auditRetentionDays, 0, 3650),
+    trafficRetentionDays: clampNum(p.trafficRetentionDays, base.trafficRetentionDays, 0, 3650),
 
     sshRequireApproval: bool(p.sshRequireApproval, base.sshRequireApproval),
     sshDefaultTtlDays: clampNum(p.sshDefaultTtlDays, base.sshDefaultTtlDays, 0, 3650),

@@ -72,9 +72,20 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 // ————————————————————————————————————————————————————————
 
 test('没存过设置时返回默认值', () => {
-  assert.equal(settings.getSettings().byteBase, 1024);
+  // 进制默认 1000 是刻意的：面板是拿来跟服务商账单对账的，
+  // 1024 进制会让同一份字节数显示成一个和账单差 7% 的数字
+  assert.equal(settings.getSettings().byteBase, 1000);
   assert.equal(settings.getSettings().displayCurrency, 'USD');
   assert.equal(settings.getSettings().timezone, 'UTC');
+});
+
+test('显式存过的进制不会被默认值顶掉', () => {
+  // 改默认值不能影响已经自己选过 1024 的部署 —— 那是他们的口径，
+  // 升级一次面板就把人家的数字换一套是不能接受的
+  settings.updateSettings({ byteBase: 1024 });
+  settings.invalidateSettingsCache();
+  assert.equal(settings.getSettings().byteBase, 1024);
+  settings.updateSettings({ byteBase: 1000 });
 });
 
 test('越界的数值被夹回合法区间，而不是原样存进去', () => {

@@ -17,6 +17,17 @@ import type { Capability, Role, RoleInfo } from './permissions';
 import type { Currency } from './currency';
 import type { PublicSettings } from './settings';
 import type { Me } from './auth';
+import type { Range as DayRange } from '../components/DateRangePicker';
+
+/**
+ * 三个流量接口共用同一个区间参数。
+ *
+ * 「这段时间走了 338 GB，其中 nginx 吃掉 210 GB」这句话要成立，两个数字
+ * 就必须来自同一个区间 —— 各查各的只会让人对着两个口径找原因。
+ */
+function rangeQuery(r: DayRange): string {
+  return `from=${encodeURIComponent(r.from)}&to=${encodeURIComponent(r.to)}`;
+}
 
 export interface FleetSummary {
   total: number;
@@ -102,14 +113,14 @@ export const api = {
     req<Metric[]>(`/api/nodes/${id}/metrics?range=${range}`),
 
 
-  dailyTraffic: (id: string, days = 30) =>
-    req<DailyTraffic[]>(`/api/nodes/${id}/traffic/daily?days=${days}`),
+  dailyTraffic: (id: string, range: DayRange) =>
+    req<DailyTraffic[]>(`/api/nodes/${id}/traffic/daily?${rangeQuery(range)}`),
 
-  serviceTraffic: (id: string, days = 7) =>
-    req<ServiceTraffic[]>(`/api/nodes/${id}/traffic/services?days=${days}`),
+  serviceTraffic: (id: string, range: DayRange) =>
+    req<ServiceTraffic[]>(`/api/nodes/${id}/traffic/services?${rangeQuery(range)}`),
 
-  peerTraffic: (id: string, limit = 50) =>
-    req<PeerTraffic[]>(`/api/nodes/${id}/traffic/peers?limit=${limit}`),
+  peerTraffic: (id: string, range: DayRange, limit = 50) =>
+    req<PeerTraffic[]>(`/api/nodes/${id}/traffic/peers?${rangeQuery(range)}&limit=${limit}`),
 
   events: (limit = 60, node?: string) =>
     req<EventLog[]>(`/api/events?limit=${limit}${node ? `&node=${node}` : ''}`),
@@ -463,6 +474,8 @@ export interface PanelSettings {
 
   metricRetentionHours: number;
   auditRetentionDays: number;
+  /** 归因明细（按服务、按对端）保留多少天。日流量总账不受它影响 */
+  trafficRetentionDays: number;
 }
 
 export interface RatesPayload {

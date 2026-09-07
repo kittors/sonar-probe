@@ -17,6 +17,8 @@ import { PopoverPanel, useAnchoredPosition, useDismiss } from './Popover';
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 /** 首帧定位的估算高度。真实值渲染后由 ResizeObserver 量出来覆盖 */
 const CAL_HEIGHT = 302;
+/** 定位时要按它夹右边界 —— 日历通常比触发器宽 */
+const CAL_WIDTH = 272;
 
 const MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 
@@ -53,7 +55,7 @@ export function DatePicker({
   // 用 fit 模式，放不下就整体挪位置，绝不压缩出滚动条。
   // 首帧用估算值定位，面板挂上去后量到真实高度再修正 —— 手算总会差几个像素
   const [panelH, setPanelH] = useState<number>();
-  const pos = useAnchoredPosition(triggerRef, open, CAL_HEIGHT, 'fit', panelH);
+  const pos = useAnchoredPosition(triggerRef, open, CAL_HEIGHT, 'fit', panelH, CAL_WIDTH);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -177,7 +179,7 @@ export function DatePicker({
       </button>
 
       {open && pos && (
-        <PopoverPanel pos={pos} width={272} panelRef={panelRef} ariaLabel={ariaLabel}>
+        <PopoverPanel pos={pos} width={CAL_WIDTH} panelRef={panelRef} ariaLabel={ariaLabel}>
           <div className="ds-cal" onKeyDown={onKeyDown}>
             <div className="ds-cal-head">
               <button

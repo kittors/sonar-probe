@@ -12,6 +12,40 @@ db.exec(`PRAGMA journal_mode = WAL;`);
 db.exec(`PRAGMA synchronous = NORMAL;`);
 db.exec(`PRAGMA foreign_keys = ON;`);
 
+/*
+ * 归因口径的一次性迁移，必须跑在建表之前。
+ *
+ * 0.1.0 的 service_traffic / peer_traffic 存的是 conntrack 的**瞬时快照**：
+ * agent 每拍报一次当前活跃连接的累计字节，面板整天覆盖写。conntrack 条目
+ * 在连接关闭后就过期消失，所以那两张表回答的始终是"此刻谁连着"，
+ * 而人问的是"这段时间谁把流量吃掉了"。
+ *
+ * 实测一台生产机：近 7 天归因合计 11.03 GB，同期实际走了 278.45 GB —— 覆盖率 4%。
+ * 跨天把这些快照 SUM 起来，得到的是几个互不相关的瞬间之和，没有物理意义。
+ *
+ * 新版 agent 改报增量、面板改成累加，两种口径的行会长得一模一样却不能相加，
+ * 所以旧数据在这里清掉。留着只会让图表前低后高得莫名其妙，而它本来
+ * 也没有可回溯的价值。
+ */
+function migrateAttributionToCumulative(): void {
+  const cols = db.prepare(`PRAGMA table_info(peer_traffic)`).all() as Array<{ name: string }>;
+  // 空数组 = 全新的库，没有要迁的东西
+  if (cols.length === 0 || cols.some((c) => c.name === 'day')) return;
+
+  db.exec('BEGIN');
+  try {
+    // peer_traffic 的主键要从 (node_id, ip) 变成 (node_id, day, ip)。
+    // SQLite 改不了主键，只能重建 —— 反正里面全是要丢的快照。
+    db.exec('DROP TABLE IF EXISTS peer_traffic');
+    db.exec('DELETE FROM service_traffic');
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+migrateAttributionToCumulative();
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS nodes (
   id            TEXT PRIMARY KEY,
@@ -90,8 +124,16 @@ CREATE TABLE IF NOT EXISTS service_traffic (
   PRIMARY KEY (node_id, day, service)
 ) WITHOUT ROWID;
 
+/*
+ * 对端流量按天分桶。
+ *
+ * 原先主键是 (node_id, ip)，每次上报整表覆盖 —— 那张表回答的是"此刻谁连着"，
+ * 而人想问的是"这段时间谁把流量吃掉了"。没有 day 维度就没法按区间查，
+ * 也没法按保留期清理，只能永远显示最后一拍的快照。
+ */
 CREATE TABLE IF NOT EXISTS peer_traffic (
   node_id       TEXT NOT NULL,
+  day           TEXT NOT NULL,
   ip            TEXT NOT NULL,
   rx            INTEGER NOT NULL DEFAULT 0,
   tx            INTEGER NOT NULL DEFAULT 0,
@@ -104,10 +146,8 @@ CREATE TABLE IF NOT EXISTS peer_traffic (
   ports         TEXT NOT NULL DEFAULT '[]',
   first_seen    INTEGER NOT NULL DEFAULT 0,
   last_seen     INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (node_id, ip)
+  PRIMARY KEY (node_id, day, ip)
 ) WITHOUT ROWID;
-
-CREATE INDEX IF NOT EXISTS idx_peer_node_rx ON peer_traffic(node_id, rx DESC);
 
 CREATE TABLE IF NOT EXISTS block_rules (
   id         TEXT PRIMARY KEY,
@@ -557,6 +597,27 @@ export function purgeSimulatedData(): { nodes: number; rows: number } {
 export function pruneMetrics(retainHours = 26): void {
   const cutoff = Date.now() - retainHours * 3600_000;
   db.prepare('DELETE FROM metrics WHERE ts < ?').run(cutoff);
+}
+
+/**
+ * 清理过期的流量归因明细。
+ *
+ * 归因改成累加之后这两张表只增不减：每台机器每天最多 60 个服务 + 200 个对端，
+ * 十台机器一年就是近百万行。而 daily_traffic **不在这里清** —— 它每机每天
+ * 只有一行，却是唯一能回答"去年这个月用了多少"的账本，删掉换不来什么空间。
+ *
+ * retainDays 传 0 表示永久保留。
+ */
+export function pruneTrafficDetail(retainDays: number): number {
+  if (!Number.isFinite(retainDays) || retainDays <= 0) return 0;
+  // 按天字符串比较即可，两张表的 day 都是 YYYY-MM-DD
+  const cutoff = new Date(Date.now() - retainDays * 86_400_000).toISOString().slice(0, 10);
+  let rows = 0;
+  for (const table of ['service_traffic', 'peer_traffic']) {
+    const res = db.prepare(`DELETE FROM ${table} WHERE day < ?`).run(cutoff);
+    rows += Number(res.changes ?? 0);
+  }
+  return rows;
 }
 
 /**
