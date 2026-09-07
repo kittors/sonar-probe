@@ -1,6 +1,6 @@
 {
   "name": "sonar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Sonar — 卡片式 VPS 探针面板，带流量归因与实时封禁",
   "scripts": {
