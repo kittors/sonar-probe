@@ -63,7 +63,6 @@ interface MeterProps {
   label: ReactNode;
   /** 0-100 */
   value: number;
-  detail?: string;
   color?: string;
   warnAt?: number;
   dangerAt?: number;
@@ -84,7 +83,6 @@ interface MeterProps {
 export function Meter({
   label,
   value,
-  detail,
   color = 'var(--color-brand)',
   warnAt = 80,
   dangerAt = 92,
@@ -127,7 +125,7 @@ export function Meter({
       <span
         className="ds-text-caption tnum"
         style={{
-          width: detail || empty ? undefined : 34,
+          width: empty ? undefined : 34,
           textAlign: 'right',
           flexShrink: 0,
           fontWeight: 500,
@@ -138,7 +136,7 @@ export function Meter({
               : 'var(--ds-text-secondary)',
         }}
       >
-        {empty ? '—' : (detail ?? `${v.toFixed(0)}%`)}
+        {empty ? '—' : `${v.toFixed(0)}%`}
       </span>
     </div>
   );

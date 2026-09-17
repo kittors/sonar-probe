@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import type { NodeState } from '../lib/types';
-import { bytes, safeUrl } from '../lib/format';
+import { bytes, cycleLastDay, safeUrl } from '../lib/format';
 import { CURRENCIES as ALL_CURRENCIES, CURRENCY_META } from '../lib/currency';
 import { useSettings } from '../lib/settings';
 import { Modal } from './Modal';
@@ -337,9 +337,20 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
           </div>
         </Field>
 
+        {/*
+          hint 要显示周期的**最后一天**，不是 cycleEnd。
+          cycleEnd 是下个周期的第一天，照搬会写成"09-01 – 10-01"，
+          让人以为 10 月 1 日的流量还算在这个周期里。
+
+          改了下拉框还没保存时不显示旧区间：那会让人以为新周期已经生效。
+        */}
         <Field
           label="流量周期"
-          hint={`本周期 ${md(node.cycleStart)} – ${md(node.cycleEnd)}`}
+          hint={
+            Number(billingDay) === node.billingDay
+              ? `本周期 ${md(node.cycleStart)} – ${md(cycleLastDay(node.cycleEnd))} · 跟机房后台的起算日保持一致，两边的已用量才能对上`
+              : '保存后按新的重置日重新划分周期'
+          }
         >
           <Select
             value={billingDay}

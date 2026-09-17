@@ -21,6 +21,7 @@ let display = {
   timezone: 'UTC',
   expiryWarnDays: 7,
   quotaWarnPercent: 80,
+  trafficDirection: 'both' as 'both' | 'tx' | 'rx',
 };
 
 export function applyDisplaySettings(patch: Partial<typeof display>): void {
@@ -57,10 +58,46 @@ export function bytes(n: number | null | undefined, digits?: number): string {
   return `${neg ? '-' : ''}${v.toFixed(d)} ${units[i]}`;
 }
 
+/**
+ * 按计费方向合并收发。
+ *
+ * 服务端算"本周期已用"时就是按这个口径（settings.trafficTotal），前端凡是
+ * 要和配额放在一起比的数字都得走同一个函数 —— 否则同一张卡片里
+ * "合计 846 GB"和进度条上的"399 GB / 1 TB"会是两个口径，
+ * 看的人没法判断哪个才是账单上会扣的那个数。
+ *
+ * 归因明细（哪个进程、哪个对端用了多少）不走这里：那是"谁在用"，
+ * 双向都算才完整。
+ */
+export function trafficTotal(rx: number, tx: number): number {
+  if (display.trafficDirection === 'tx') return tx;
+  if (display.trafficDirection === 'rx') return rx;
+  return rx + tx;
+}
+
 /** 把人填的"数值 + 单位"折回字节。设置页和编辑弹窗输入配额时用。 */
 export function toBytes(value: number, unit: 'GB' | 'TB'): number {
   const base = display.byteBase;
   return value * (unit === 'TB' ? base ** 4 : base ** 3);
+}
+
+/**
+ * 流量周期的最后一天。
+ *
+ * 服务端给的 cycleEnd 是左闭右开的右端，也就是**下个周期的第一天**。
+ * 原样显示成"09-01 – 10-01"会让人以为 10 月 1 日也算在这个周期里，
+ * 而那天的流量其实已经进了下一个账单。
+ */
+export function cycleLastDay(cycleEnd: string): string {
+  const t = Date.parse(`${cycleEnd}T00:00:00Z`);
+  if (!Number.isFinite(t)) return cycleEnd;
+  return new Date(t - 86_400_000).toISOString().slice(0, 10);
+}
+
+/** YYYY-MM-DD → M/D。周期那行横向空间紧张，年份对当期流量没有信息量。 */
+export function monthDay(day: string): string {
+  const [, m, d] = day.split('-');
+  return m && d ? `${Number(m)}/${Number(d)}` : day;
 }
 
 /** 速率，byte/s → 人类可读。 */

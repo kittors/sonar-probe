@@ -59,6 +59,9 @@ export function NodeCard({ node, index = 0 }: { node: NodeState; index?: number 
   const cpu = m?.cpu ?? 0;
   const memPct = m ? ratio(m.memUsed, node.memTotal) : 0;
   const diskPct = m ? ratio(m.diskUsed, node.diskTotal) : 0;
+  // 负载和上面两条一样按百分比读数：三条并排时，只有第三条是"0.29"这种
+  // 绝对值，得先知道机器几核才判断得出它高不高。原始负载放 Tooltip。
+  const loadPct = m ? Math.min(100, (m.load1 / node.cpuCores) * 100) : 0;
 
   const quotaPct = node.trafficQuota > 0 ? ratio(node.trafficUsed, node.trafficQuota) : 0;
   const expire = untilExpire(node.expireAt);
@@ -179,13 +182,17 @@ export function NodeCard({ node, index = 0 }: { node: NodeState; index?: number 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <Meter label="内存" value={memPct} empty={!m} compact />
           <Meter label="磁盘" value={diskPct} empty={!m} compact />
-          <Meter
-            label="负载"
-            value={m ? Math.min(100, (m.load1 / node.cpuCores) * 100) : 0}
-            detail={m ? m.load1.toFixed(2) : undefined}
-            empty={!m}
-            compact
-          />
+          <Tooltip
+            content={
+              m
+                ? `1 / 5 / 15 分钟负载 ${m.load1.toFixed(2)} / ${m.load5.toFixed(2)} / ${m.load15.toFixed(2)} · ${node.cpuCores} 核`
+                : ''
+            }
+          >
+            <div>
+              <Meter label="负载" value={loadPct} empty={!m} compact />
+            </div>
+          </Tooltip>
         </div>
 
         {/* —— 网络速率 —— */}

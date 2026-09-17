@@ -4,18 +4,22 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useAsync, useLiveNode } from '../lib/live';
 import { useAuth } from '../lib/auth';
+import { trafficDirectionLabel, useSettings } from '../lib/settings';
 import type { BlockRule, NodeState, PeerTraffic } from '../lib/types';
 import {
   ago,
   bytes,
   clockTime,
   count,
+  cycleLastDay,
   isNearQuota,
   money,
+  monthDay,
   percent,
   rate,
   ratio,
   safeUrl,
+  trafficTotal,
   untilExpire,
   uptime,
 } from '../lib/format';
@@ -140,6 +144,22 @@ export function NodeDetail() {
     [id, trafficRange],
   );
   const blocks = useAsync(() => (can('block:view') ? api.blocks(id!) : Promise.resolve([])), [id]);
+
+  /*
+   * 区间内"会被账单扣掉的那个数"。
+   *
+   * 按面板设置的计费方向合并，和服务端算 trafficUsed 是同一个口径 ——
+   * 否则机房只计出站时，卡片标题写着"合计 846 GB"、正下方的配额条写着
+   * "399 GB / 1 TB"，两个数字在同一张卡片里对不上。
+   */
+  const { trafficDirection } = useSettings();
+  const billedSum = useMemo(
+    () => (daily.data ?? []).reduce((a, d) => a + trafficTotal(d.rx, d.tx), 0),
+    [daily.data, trafficDirection],
+  );
+  // 只计单向时把口径写出来，不然"合计"比柱子加起来少一半，看着像漏数据
+  const directionNote =
+    trafficDirection === 'both' ? '' : `（${trafficDirectionLabel(trafficDirection)}）`;
 
   // 曲线要跟着实时走。短窗口刷得勤一点，24 小时窗口没必要频繁重拉。
   const { reload: reloadMetrics } = metrics;
@@ -390,12 +410,16 @@ export function NodeDetail() {
             sub={`${bytes(m?.diskUsed ?? 0, 0)} / ${bytes(node.diskTotal, 0)}`}
             color={SERIES.disk}
           />
+          {/*
+            环里是"1 分钟负载占核心数的百分比"，和左边三个环同一口径 ——
+            四个环并排时混着绝对值和百分比，看的人得先分辨这个数是什么单位。
+            1/5/15 分钟的原始负载放在下面，对比趋势时仍然拿得到。
+          */}
           <RingCell
             value={loadPct}
             label="负载"
             sub={m ? `${m.load1.toFixed(2)} / ${m.load5.toFixed(2)} / ${m.load15.toFixed(2)}` : '—'}
             color={SERIES.load}
-            display={m ? m.load1.toFixed(2) : '—'}
           />
 
           <div
@@ -643,7 +667,7 @@ export function NodeDetail() {
           title="流量消耗"
           subtitle={
             daily.data
-              ? `${rangeLabel(trafficRange, activePreset)} · 合计 ${bytes(daily.data.reduce((a, d) => a + d.rx + d.tx, 0))}`
+              ? `${rangeLabel(trafficRange, activePreset)} · 合计 ${bytes(billedSum)}${directionNote}`
               : '加载中'
           }
           actions={
@@ -678,7 +702,7 @@ export function NodeDetail() {
                   value={bytes(node.trafficUsed)}
                   hint={
                     [
-                      `${node.cycleStart.slice(5)} 起`,
+                      `${monthDay(node.cycleStart)} – ${monthDay(cycleLastDay(node.cycleEnd))}`,
                       node.trafficQuota > 0
                         ? `配额 ${bytes(node.trafficQuota, 0)} · ${percent(ratio(node.trafficUsed, node.trafficQuota), 0)}`
                         : '不限量',
@@ -698,10 +722,7 @@ export function NodeDetail() {
                 />
                 <Stat
                   label="日均"
-                  value={bytes(
-                    (daily.data?.reduce((a, d) => a + d.rx + d.tx, 0) ?? 0) /
-                      Math.max(1, daily.data?.length ?? 1),
-                  )}
+                  value={bytes(billedSum / Math.max(1, daily.data?.length ?? 1))}
                 />
                 <Stat
                   label="累计上行"
@@ -912,7 +933,9 @@ function QuotaBar({ node }: { node: NodeState }) {
         <span className="ds-text-body-sm text-ds-secondary">
           本周期已用 <span className="tnum" style={{ fontWeight: 600 }}>{bytes(node.trafficUsed)}</span>
         </span>
-        <span className="ds-text-caption text-ds-description">不限量 · {node.cycleStart.slice(5)} 起</span>
+        <span className="ds-text-caption text-ds-description">
+          不限量 · {monthDay(node.cycleStart)} – {monthDay(cycleLastDay(node.cycleEnd))}
+        </span>
       </div>
     );
   }
@@ -948,6 +971,17 @@ function QuotaBar({ node }: { node: NodeState }) {
           <span className="tnum ds-quota-used">{bytes(node.trafficUsed)}</span>
           <span className="text-ds-description"> / {bytes(node.trafficQuota, 0)}</span>
         </span>
+        {/*
+          周期区间要写出来，光说"14 天后重置"不够。
+          面板按这里配的账单日切周期，机房后台按它自己的日子切 —— 两边对不上时，
+          这一行是唯一能让人立刻看出"面板从 1 号算、机房从 5 号算"的地方，
+          否则只能看到两个总量不一样，却不知道差在哪。
+        */}
+        <Tooltip content={`本流量周期 ${node.cycleStart} 至 ${cycleLastDay(node.cycleEnd)}，与机房后台的起始日不一致时，在编辑里改「流量周期」重置日`}>
+          <span className="ds-text-caption text-ds-description tnum">
+            {monthDay(node.cycleStart)} – {monthDay(cycleLastDay(node.cycleEnd))}
+          </span>
+        </Tooltip>
         <span style={{ flex: 1 }} />
         <span className="ds-text-caption text-ds-description tnum">
           剩 {bytes(left)} · {daysLeft} 天后重置
@@ -988,43 +1022,16 @@ function RingCell({
   sub,
   color,
   icon,
-  display,
 }: {
   value: number;
   label: string;
   sub: string;
   color: string;
   icon?: React.ReactNode;
-  display?: string;
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7 }}>
-      {display ? (
-        <div style={{ position: 'relative' }}>
-          <Ring value={value} color={color} size={86} sublabel="" />
-          {/* 负载显示绝对值更有意义，百分比只用来画环 */}
-          <span
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'grid',
-              placeItems: 'center',
-              fontSize: 19,
-              fontWeight: 600,
-              letterSpacing: '-0.02em',
-              color: 'var(--ds-text-primary)',
-              background: 'var(--ds-bg-surface)',
-              borderRadius: '50%',
-              margin: 14,
-            }}
-            className="tnum"
-          >
-            {display}
-          </span>
-        </div>
-      ) : (
-        <Ring value={value} color={color} size={86} />
-      )}
+      <Ring value={value} color={color} size={86} />
       <div style={{ textAlign: 'center' }}>
         <div
           className="ds-text-caption text-ds-secondary"

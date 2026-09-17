@@ -97,6 +97,7 @@ class SettingsStore {
       timezone: this.snapshot.timezone,
       expiryWarnDays: this.snapshot.expiryWarnDays,
       quotaWarnPercent: this.snapshot.quotaWarnPercent,
+      trafficDirection: this.snapshot.trafficDirection,
     });
   }
 
