@@ -6,11 +6,14 @@ import { useSyncExternalStore } from 'react';
  * 之前放在 live.ts 里用 useState 管，有三个毛病，这里逐个解决：
  *
  * 1. `data-theme` 在 useEffect 里才写，首帧是默认浅色 —— 深色用户每次刷新都白闪一下。
- *    → 挪到 index.html 的同步内联脚本里，在样式表解析前就定好。
+ *    → 挪到 public/theme-boot.js，由 index.html 在 <head> 里同步加载，首帧之前就定好。
+ *      这里在模块加载时再核对一遍：那个脚本万一没跑成，至少入口一执行主题就对了，
+ *      不会出现"按钮以为是深色、页面却是浅色"的错位。
  *
  * 2. 一部分元素带 transition（按钮、卡片），一部分不带。切换瞬间前者用 0.2s 渐变、
  *    后者立刻变色，看起来就是"某些元素在闪"。
- *    → 切换时给 <html> 打个标记，CSS 里把所有过渡和动画全部冻住，下一帧再解开。
+ *    → 切换时给 <html> 打个标记，CSS 里把所有过渡冻住，下一帧再解开。
+ *      只冻过渡、不冻动画：animation 被置 none 再恢复会从头重播，整页入场动画都会重演一遍。
  *
  * 3. theme state 挂在 Shell 上，一变就重渲染整棵树（所有卡片和图表跟着重画）。
  *    → 改成模块级 store + useSyncExternalStore，只有真正读它的组件才重渲染。
@@ -31,11 +34,20 @@ function read(): Theme {
 
 let current: Theme = typeof document === 'undefined' ? 'light' : read();
 
-/** 页面加载完成后解除首帧的过渡冻结。 */
 if (typeof document !== 'undefined') {
+  const root = document.documentElement;
+
+  // theme-boot.js 没跑成时由这里补上。read() 只读不写，不补的话 data-theme 就一直空着，
+  // 页面按浅色画，主题按钮却按 current 显示 —— 线上曾因 CSP 拦掉内联脚本出过这个问题
+  if (root.dataset.theme !== current) {
+    root.dataset.themeBoot = '1';
+    root.dataset.theme = current;
+  }
+
+  // 页面挂载后解除首帧的过渡冻结
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      delete document.documentElement.dataset.themeBoot;
+      delete root.dataset.themeBoot;
     });
   });
 

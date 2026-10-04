@@ -2976,7 +2976,13 @@ html[data-theme='dark'] {
 }
 
 /* ————————————————————————————————————————————————————————
-   主题切换：换色瞬间冻住所有过渡和动画，得到干净的瞬切
+   主题切换：换色瞬间冻住所有过渡，得到干净的瞬切
+
+   只冻 transition，不冻 animation。"有的元素渐变、有的元素瞬变"只会出在过渡上；
+   而 animation 一旦被置成 none 再恢复，浏览器会把它当成新动画从头播 ——
+   之前两样一起冻，每切一次主题，整页的入场动画（路由淡入、卡片上浮、曲线描画，
+   一共六七十个）全部重演一遍，内容先闪成透明再浮出来。
+   首帧同理：冻住动画只会让入场推迟两帧，先露一下终态再跳回透明重放。
    ———————————————————————————————————————————————————————— */
 
 html[data-theme-switching] *,
@@ -2986,5 +2992,4 @@ html[data-theme-boot] *,
 html[data-theme-boot] *::before,
 html[data-theme-boot] *::after {
   transition: none !important;
-  animation: none !important;
 }
