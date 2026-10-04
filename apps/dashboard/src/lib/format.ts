@@ -179,7 +179,7 @@ export function untilExpire(ts: number): { text: string; days: number; urgent: b
  * normal 是没到警戒线时的颜色。进度条要用品牌色，而表格里那一列是文字，
  * 整列涂成蓝色只会吵 —— 同一套阈值，两种载体本就该有不同的静默态。
  */
-export function quotaTone(percent: number, normal = 'var(--color-brand)'): string {
+export function quotaTone(percent: number, normal = 'var(--ds-data)'): string {
   if (percent >= 100) return 'var(--color-danger)';
   if (percent >= display.quotaWarnPercent) return 'var(--color-warn)';
   return normal;

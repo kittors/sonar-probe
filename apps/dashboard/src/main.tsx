@@ -2,6 +2,10 @@ import { StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
+// 西文与数字用 Geist，读数用 Geist Mono。自托管、只按 unicode-range 下载拉丁子集（约 30KB），
+// 不走任何外部字体 CDN —— 面板常部署在内网或墙内，外链字体要么慢要么直接挂
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
 import './styles/theme.css';
 import { Shell } from './components/Shell';
 import { Overview } from './pages/Overview';
@@ -12,6 +16,7 @@ import { SshAccess } from './pages/SshAccess';
 import { AuthProvider, useAuth } from './lib/auth';
 import { EmptyState } from './components/ui';
 import { IconShield } from './components/icons';
+import { openLogin } from './components/Shell';
 
 /**
  * 登录守卫。
@@ -25,8 +30,10 @@ function RequireAuth({ children }: { children: ReactNode }) {
 
   if (loading) {
     return (
-      <div style={{ display: 'grid', placeItems: 'center', minHeight: '40vh' }}>
-        <div className="ds-skeleton" style={{ width: 200, height: 10 }} />
+      <div aria-busy="true" style={{ display: 'grid', gap: 14 }}>
+        <div className="ds-skeleton" style={{ width: 180, height: 26 }} />
+        <div className="ds-skeleton" style={{ width: 320, height: 14 }} />
+        <div className="ds-skeleton" style={{ height: 220, borderRadius: 8, marginTop: 10 }} />
       </div>
     );
   }
@@ -48,9 +55,14 @@ function RequireAuth({ children }: { children: ReactNode }) {
     return (
       <div className="ds-surface">
         <EmptyState
-          icon={<IconShield size={30} />}
+          icon={<IconShield size={22} />}
           title="这一页需要先登录"
-          hint="点右上角的「登录」，用账号密码、GitHub 或访客身份进入都可以。概览页不需要登录。"
+          hint="用账号密码、GitHub 或访客身份进入都可以。概览页不需要登录。"
+          action={
+            <button className="ds-btn ds-btn-primary" onClick={openLogin}>
+              登录
+            </button>
+          }
         />
       </div>
     );
@@ -75,8 +87,9 @@ createRoot(document.getElementById('root')!).render(
                 </RequireAuth>
               }
             />
+            {/* 分区落在路径上，命令面板、刷新和分享出去的链接都能直接定位到某一块 */}
             <Route
-              path="/ssh"
+              path="/ssh/:tab?"
               element={
                 <RequireAuth>
                   <SshAccess />
@@ -92,7 +105,7 @@ createRoot(document.getElementById('root')!).render(
               }
             />
             <Route
-              path="/admin"
+              path="/admin/:tab?"
               element={
                 <RequireAuth>
                   <Admin />

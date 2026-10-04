@@ -104,9 +104,10 @@ export function nearestIndex(len: number, ratio: number): number {
 /**
  * 图表配色。
  *
- * 全部走 CSS 变量而不是写死色值 —— 同一个 #4d6bfe 在白底上沉稳，
- * 扔进深色背景就发闷。变量在 theme.css 里按主题各给一套，
+ * 全部走 CSS 变量而不是写死色值 —— 变量在 theme.css 里按主题各给一套，
  * SVG 的 stroke/fill 认 var()，所以图表能跟着主题一起变。
+ *
+ * 两条线的图是"炭黑 + 橙"：主序列炭黑，对照序列橙，一深一亮，不再引入第三种色相。
  */
 export const SERIES = {
   cpu: 'var(--chart-cpu)',
@@ -120,16 +121,22 @@ export const SERIES = {
   danger: 'var(--color-danger)',
 } as const;
 
-/** 服务分类 → 颜色。榜单和图例共用。 */
+/**
+ * 服务分类 → 颜色。榜单和图例共用。
+ *
+ * 分类要彼此分得开，所以这里是一组单独的分类色（--chart-c1…c7），
+ * 低饱和、偏暖，和炭黑 + 橙的主色调放在一起不打架。
+ * "已关闭"和"其他"用最浅的那档：它们是兜底，不该和真实服务抢眼。
+ */
 export const CATEGORY_COLOR: Record<string, string> = {
-  web: 'var(--chart-cpu)',
-  database: 'var(--chart-mem)',
-  container: 'var(--chart-disk)',
-  transfer: 'var(--chart-rx)',
-  system: 'var(--chart-neutral)',
-  app: 'var(--chart-load)',
-  other: 'var(--chart-muted)',
-  closed: 'var(--chart-muted)',
+  web: 'var(--chart-c1)',
+  database: 'var(--chart-c2)',
+  container: 'var(--chart-c6)',
+  transfer: 'var(--chart-c4)',
+  system: 'var(--chart-c3)',
+  app: 'var(--chart-c5)',
+  other: 'var(--chart-c7)',
+  closed: 'var(--chart-c7)',
 };
 
 export const CATEGORY_LABEL: Record<string, string> = {
@@ -143,12 +150,17 @@ export const CATEGORY_LABEL: Record<string, string> = {
   closed: '已关闭',
 };
 
-/** 威胁分 → 颜色档位。同样走变量，暗色下会自动提亮。 */
+/**
+ * 威胁分 → 颜色档位。
+ *
+ * 正常的来源不上色。之前低分是绿色，一张表里几十行都挂着绿条绿标，
+ * 真正可疑的那两行反而被冲淡了 —— 颜色只该花在需要人看的地方。
+ */
 export function threatColor(score: number): string {
   if (score >= 75) return 'var(--color-danger)';
   if (score >= 50) return 'var(--color-warn)';
   if (score >= 25) return 'var(--chart-caution)';
-  return 'var(--color-ok)';
+  return 'var(--ds-data)';
 }
 
 export function threatLabel(score: number): string {

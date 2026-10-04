@@ -10,6 +10,7 @@ import { Alert, Chip, Field, FieldRow, SectionCard, Segmented, Skeleton } from '
 import { Select } from '../components/Select';
 import { Tooltip } from '../components/Tooltip';
 import { IconInfo, IconRefresh } from '../components/icons';
+import { TextInput } from '../components/Input';
 
 /**
  * 通用设置
@@ -408,8 +409,8 @@ function RateTable({
                   {effective > 0 ? effective.toFixed(4) : '—'}
                 </td>
                 <td style={{ padding: '7px 10px', textAlign: 'right' }}>
-                  <input
-                    className="ds-input tnum"
+                  <TextInput
+                    className="tnum"
                     style={{ width: 110, textAlign: 'right' }}
                     inputMode="decimal"
                     disabled={!editable || code === 'USD'}
@@ -567,8 +568,7 @@ function TimeSection({
       <FieldRow>
         <Field label="面板时区" width={260} hint={`当前该时区时间：${nowThere}`}>
           {custom ? (
-            <input
-              className="ds-input"
+            <TextInput
               value={draft.timezone}
               disabled={!editable}
               placeholder="Asia/Shanghai"
@@ -767,8 +767,7 @@ function PanelSection({ draft, set, editable }: SectionProps) {
     <SectionCard title="面板" subtitle="顶栏和浏览器标签上显示的名字">
       <FieldRow>
         <Field label="名称" width={220}>
-          <input
-            className="ds-input"
+          <TextInput
             value={draft.panelName}
             disabled={!editable}
             maxLength={30}
@@ -777,8 +776,7 @@ function PanelSection({ draft, set, editable }: SectionProps) {
           />
         </Field>
         <Field label="副标题" width={240} hint="留空则不显示那行小字">
-          <input
-            className="ds-input"
+          <TextInput
             value={draft.panelTagline}
             disabled={!editable}
             maxLength={40}
@@ -850,8 +848,8 @@ function NumberField({
       }
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <input
-          className="ds-input tnum"
+        <TextInput
+          className="tnum"
           style={{ width: suffix ? 78 : undefined }}
           inputMode="decimal"
           disabled={!editable}

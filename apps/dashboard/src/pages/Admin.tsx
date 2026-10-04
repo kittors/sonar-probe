@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate, useParams } from 'react-router-dom';
 
 import { api, ApiError, type AdminUser, type LedgerRow, type TrafficRule } from '../lib/api';
 import { AdminSettings } from './AdminSettings';
@@ -11,10 +11,11 @@ import { ago, bytes, clockTime, count, isNearQuota, percent, quotaTone } from '.
 import { CountryBadge } from '../components/CountryBadge';
 import { Modal } from '../components/Modal';
 import { Tooltip } from '../components/Tooltip';
-import { Alert, Chip, EmptyState, Field, RawCheckbox, SectionCard, Segmented, Select, Skeleton, Stat } from '../components/ui';
+import { Alert, Chip, EmptyState, Field, LinkTabs, PageHeader, RawCheckbox, SectionCard, Segmented, Select, Skeleton, Stat } from '../components/ui';
+import { ADMIN_SECTIONS } from '../components/nav';
 import {
   IconAlert,
-  IconChevronLeft,
+  IconChevronRight,
   IconCheck,
   IconCopy,
   IconGlobe,
@@ -23,18 +24,20 @@ import {
   IconTrash,
   IconX,
 } from '../components/icons';
-
-type Tab = 'users' | 'roles' | 'online' | 'audit' | 'traffic' | 'settings';
+import { TextInput } from '../components/Input';
 
 export function Admin() {
-  const { can, me } = useAuth();
-  const [tab, setTab] = useState<Tab>('users');
+  const { can } = useAuth();
+  const { tab } = useParams<{ tab?: string }>();
 
-  if (!can('user:view') && !can('audit:view') && !can('alert:view') && !can('settings:view')) {
+  // 分区和命令面板共用 nav.tsx 里那一份定义，这里只按权限筛
+  const visible = ADMIN_SECTIONS.filter((s) => can(s.cap));
+
+  if (visible.length === 0) {
     return (
       <div className="ds-surface">
         <EmptyState
-          icon={<IconShield size={30} />}
+          icon={<IconShield size={22} />}
           title="你没有管理权限"
           hint="需要管理员给你开通「查看用户列表」或「查看访问审计」才能进入这里。"
         />
@@ -42,54 +45,41 @@ export function Admin() {
     );
   }
 
-  const tabs: Array<{ value: Tab; label: string; show: boolean }> = [
-    { value: 'users', label: '用户与权限', show: can('user:view') },
-    // 角色是"一次改一批人"的东西，紧挨着用户放，但排在后面 ——
-    // 日常要动的是某个人的权限，改角色是低频且影响面更大的操作
-    { value: 'roles', label: '角色', show: can('user:view') },
-    { value: 'online', label: '在线与访客', show: can('audit:view') },
-    { value: 'audit', label: '审计日志', show: can('audit:view') },
-    { value: 'traffic', label: '流量阈值', show: can('alert:view') },
-    // 放在最后：它管的是全站口径，改的频率远低于前面几项日常要看的东西
-    { value: 'settings', label: '通用设置', show: can('settings:view') },
-  ];
-  const visible = tabs.filter((t) => t.show);
-  const active = visible.some((t) => t.value === tab) ? tab : (visible[0]?.value ?? 'users');
+  // /admin 本身不是一页；落在一个看不到的分区上（比如权限刚被收走）也退回第一个能看的
+  const section = visible.find((s) => s.tab === tab);
+  if (!section) return <Navigate to={`/admin/${visible[0]!.tab}`} replace />;
 
   return (
     <>
-      <Link
-        to="/"
-        className="ds-text-body-sm text-ds-description"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none', marginBottom: 12 }}
-      >
-        <IconChevronLeft size={14} />
-        返回概览
-      </Link>
+      <PageHeader
+        breadcrumb={
+          <nav className="ds-breadcrumb" aria-label="当前位置">
+            <Link to="/">机器概览</Link>
+            <IconChevronRight size={12} />
+            <span aria-current="page">管理后台</span>
+          </nav>
+        }
+        title="管理后台"
+        description="账号与权限、在线与审计、流量阈值，以及全站的计算口径。"
+      />
 
-      <header style={{ marginBottom: 18 }}>
-        <h1 className="ds-text-slogan text-ds-primary" style={{ margin: 0, fontSize: 'clamp(22px, 2.6vw, 30px)' }}>
-          管理后台
-        </h1>
-        <p className="ds-text-body text-ds-description" style={{ margin: '6px 0 0' }}>
-          当前身份 {me?.name} · {me?.roleLabel}
-        </p>
-      </header>
-
-      <div style={{ marginBottom: 16 }}>
-        <Segmented
-          value={active}
-          onChange={(v) => setTab(v)}
-          options={visible.map((t) => ({ value: t.value, label: t.label }))}
+      <div style={{ marginBottom: 24 }}>
+        <LinkTabs
+          value={section.tab}
+          ariaLabel="管理分区"
+          options={visible.map((s) => ({ value: s.tab, label: s.label, to: `/admin/${s.tab}` }))}
         />
+        <p className="ds-text-body-sm text-ds-description" style={{ margin: '14px 0 0' }}>
+          {section.description}
+        </p>
       </div>
 
-      {active === 'users' && <UsersTab />}
-      {active === 'roles' && <AdminRoles />}
-      {active === 'online' && <OnlineTab />}
-      {active === 'audit' && <AuditTab />}
-      {active === 'traffic' && <TrafficTab />}
-      {active === 'settings' && <AdminSettings />}
+      {section.tab === 'users' && <UsersTab />}
+      {section.tab === 'roles' && <AdminRoles />}
+      {section.tab === 'online' && <OnlineTab />}
+      {section.tab === 'audit' && <AuditTab />}
+      {section.tab === 'traffic' && <TrafficTab />}
+      {section.tab === 'settings' && <AdminSettings />}
     </>
   );
 }
@@ -446,24 +436,26 @@ function UserRow({
           </button>
           {editable && !isSelf && (
             <>
-              <button
-                className="ds-btn ds-btn-ghost ds-btn-s"
-                style={{ marginLeft: 5 }}
-                onClick={() => void onKick()}
-                title="强制下线，需要重新登录"
-              >
-                踢下线
-              </button>
-              {/* 访客没有密码可重置 */}
-              {!isGuest && (
+              <Tooltip content="强制下线，需要重新登录">
                 <button
                   className="ds-btn ds-btn-ghost ds-btn-s"
                   style={{ marginLeft: 5 }}
-                  onClick={onResetPassword}
-                  title="生成一个新密码，对方下次登录必须修改"
+                  onClick={() => void onKick()}
                 >
-                  重置密码
+                  踢下线
                 </button>
+              </Tooltip>
+              {/* 访客没有密码可重置 */}
+              {!isGuest && (
+                <Tooltip content="生成一个新密码，对方下次登录必须修改">
+                  <button
+                    className="ds-btn ds-btn-ghost ds-btn-s"
+                    style={{ marginLeft: 5 }}
+                    onClick={onResetPassword}
+                  >
+                    重置密码
+                  </button>
+                </Tooltip>
               )}
               {!protectedUser && (
                 <button
@@ -477,14 +469,16 @@ function UserRow({
             </>
           )}
           {canCreate && !isSelf && !protectedUser && (
-            <button
-              className="ds-btn ds-btn-ghost ds-btn-s"
-              style={{ marginLeft: 5, color: 'var(--color-danger)' }}
-              onClick={onDelete}
-              title="删除账号"
-            >
-              <IconTrash size={12} />
-            </button>
+            <Tooltip content="删除账号">
+              <button
+                className="ds-btn ds-btn-ghost ds-btn-s"
+                style={{ marginLeft: 5, color: 'var(--color-danger)' }}
+                onClick={onDelete}
+                aria-label="删除账号"
+              >
+                <IconTrash size={12} />
+              </button>
+            </Tooltip>
           )}
         </td>
       </tr>
@@ -659,8 +653,7 @@ function CreateUserDialog({
 
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <Field label="用户名" grow error={usernameError} hint="登录用，创建后不可更改">
-            <input
-              className="ds-input"
+            <TextInput
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="zhangsan"
@@ -668,8 +661,7 @@ function CreateUserDialog({
             />
           </Field>
           <Field label="显示名称" grow hint="留空则用用户名">
-            <input
-              className="ds-input"
+            <TextInput
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="张三"
@@ -679,9 +671,7 @@ function CreateUserDialog({
 
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <Field label="初始密码" grow hint="至少 10 位、两类以上字符，且不能包含用户名">
-            <input
-              className="ds-input"
-              type="text"
+            <TextInput
               value={pw}
               onChange={(e) => setPw(e.target.value)}
               placeholder="对方首次登录后必须修改"
@@ -699,11 +689,11 @@ function CreateUserDialog({
         </div>
 
         <Field label="邮箱" hint="仅用于展示，不会发信">
-          <input className="ds-input" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <TextInput value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
 
         <Field label="备注" hint="给管理员自己看的，比如「外包，10 月底到期」">
-          <input className="ds-input" value={note} onChange={(e) => setNote(e.target.value)} />
+          <TextInput value={note} onChange={(e) => setNote(e.target.value)} />
         </Field>
 
         {role && (
@@ -815,8 +805,7 @@ function ResetPasswordDialog({
             如果只是对方忘了密码，这是正常流程；如果怀疑账号被盗，重置之后记得同时检查审计日志。
           </Alert>
           <Field label="指定新密码" hint="留空则由系统生成一个 20 位随机密码（推荐）">
-            <input
-              className="ds-input"
+            <TextInput
               value={custom}
               onChange={(e) => setCustom(e.target.value)}
               placeholder="留空自动生成"
@@ -1301,8 +1290,7 @@ function RuleComposer({
 
         <Field label="阈值">
           <div style={{ display: 'flex', gap: 6 }}>
-            <input
-              className="ds-input"
+            <TextInput
               style={{ width: 86 }}
               value={value}
               inputMode="decimal"
@@ -1329,8 +1317,7 @@ function RuleComposer({
         </Field>
 
         <Field label="备注">
-          <input
-            className="ds-input"
+          <TextInput
             style={{ width: 180 }}
             placeholder="为什么要盯这条"
             value={note}

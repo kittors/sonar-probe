@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate, useParams } from 'react-router-dom';
 
 import { api, ApiError } from '../lib/api';
 import { useAsync, useLive } from '../lib/live';
@@ -10,23 +10,27 @@ import { Modal } from '../components/Modal';
 import { Tooltip } from '../components/Tooltip';
 import {
   Alert,
+  Checkbox,
   Chip,
   EmptyState,
   Field,
+  LinkTabs,
+  PageHeader,
   SectionCard,
-  Segmented,
   Select,
   Skeleton,
 } from '../components/ui';
+import { SSH_SECTIONS } from '../components/nav';
 import {
   IconAlert,
   IconCheck,
-  IconChevronLeft,
+  IconChevronRight,
   IconCopy,
   IconGlobe,
   IconShield,
   IconTrash,
 } from '../components/icons';
+import { TextArea, TextInput } from '../components/Input';
 
 /**
  * SSH 接入
@@ -40,17 +44,15 @@ import {
  * 也拿不到任何一台机器。
  */
 
-type Tab = 'access' | 'keys' | 'grants' | 'drift';
-
 export function SshAccess() {
   const { can } = useAuth();
-  const [tab, setTab] = useState<Tab>('access');
+  const { tab } = useParams<{ tab?: string }>();
 
   if (!can('ssh:view') && !can('ssh:keys')) {
     return (
       <div className="ds-surface">
         <EmptyState
-          icon={<IconShield size={30} />}
+          icon={<IconShield size={22} />}
           title="你没有 SSH 管理权限"
           hint="需要管理员给你开通「查看 SSH 接入方式」或「管理自己的公钥」。"
         />
@@ -58,48 +60,40 @@ export function SshAccess() {
     );
   }
 
-  const tabs: Array<{ value: Tab; label: string; show: boolean }> = [
-    { value: 'access', label: '怎么连', show: can('ssh:view') },
-    { value: 'keys', label: '我的钥匙', show: can('ssh:keys') },
-    { value: 'grants', label: '授权', show: can('ssh:view') },
-    // 对账是这套东西最有价值的一格，但它暴露全机队的密钥分布，权限最高
-    { value: 'drift', label: '密钥实况', show: can('ssh:audit') },
-  ];
-  const visible = tabs.filter((t) => t.show);
-  const active = visible.some((t) => t.value === tab) ? tab : (visible[0]?.value ?? 'keys');
+  // 对账是这套东西最有价值的一格，但它暴露全机队的密钥分布，权限最高 —— 由 nav.tsx 里的 cap 把关
+  const visible = SSH_SECTIONS.filter((s) => can(s.cap));
+  const section = visible.find((s) => s.tab === tab);
+  if (!section) return <Navigate to={`/ssh/${visible[0]!.tab}`} replace />;
 
   return (
     <>
-      <Link
-        to="/"
-        className="ds-text-body-sm text-ds-description"
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none', marginBottom: 12 }}
-      >
-        <IconChevronLeft size={14} />
-        返回概览
-      </Link>
+      <PageHeader
+        breadcrumb={
+          <nav className="ds-breadcrumb" aria-label="当前位置">
+            <Link to="/">机器概览</Link>
+            <IconChevronRight size={12} />
+            <span aria-current="page">SSH 接入</span>
+          </nav>
+        }
+        title="SSH 接入"
+        description="面板只分发公钥、只维护连接目录。私钥不经过这里，ssh 连接也不经过这里。"
+      />
 
-      <header style={{ marginBottom: 18 }}>
-        <h1 className="ds-text-slogan text-ds-primary" style={{ margin: 0, fontSize: 'clamp(22px, 2.6vw, 30px)' }}>
-          SSH 接入
-        </h1>
-        <p className="ds-text-body text-ds-description" style={{ margin: '6px 0 0' }}>
-          面板只分发公钥、只维护连接目录。私钥不经过这里，ssh 连接也不经过这里。
-        </p>
-      </header>
-
-      <div style={{ marginBottom: 16 }}>
-        <Segmented
-          value={active}
-          onChange={(v) => setTab(v)}
-          options={visible.map((t) => ({ value: t.value, label: t.label }))}
+      <div style={{ marginBottom: 24 }}>
+        <LinkTabs
+          value={section.tab}
+          ariaLabel="SSH 分区"
+          options={visible.map((s) => ({ value: s.tab, label: s.label, to: `/ssh/${s.tab}` }))}
         />
+        <p className="ds-text-body-sm text-ds-description" style={{ margin: '14px 0 0' }}>
+          {section.description}
+        </p>
       </div>
 
-      {active === 'access' && <AccessTab />}
-      {active === 'keys' && <KeysTab />}
-      {active === 'grants' && <GrantsTab />}
-      {active === 'drift' && <DriftTab />}
+      {section.tab === 'access' && <AccessTab />}
+      {section.tab === 'keys' && <KeysTab />}
+      {section.tab === 'grants' && <GrantsTab />}
+      {section.tab === 'drift' && <DriftTab />}
     </>
   );
 }
@@ -110,6 +104,7 @@ export function SshAccess() {
 
 function AccessTab() {
   const { can } = useAuth();
+  const { nodes } = useLive();
   const endpoints = useAsync(() => api.sshEndpoints(), []);
   const [editing, setEditing] = useState<SshEndpoint | null>(null);
   const [showConfig, setShowConfig] = useState(false);
@@ -137,7 +132,19 @@ function AccessTab() {
       >
         {list.length === 0 ? (
           <div style={{ padding: 20 }}>
-            <EmptyState title="还没有接入任何机器" hint="先在概览页接入机器，这里会自动出现它的 SSH 别名。" />
+            {/*
+              连接目录里只有上报过 SSH 实况的机器（采集端定时报 sshd 配置和 host key）。
+              面板里明明有机器、这里却说"还没有接入任何机器"，会把人支去概览页再接一遍 ——
+              所以两种空要分开说。
+            */}
+            {nodes.length === 0 ? (
+              <EmptyState title="还没有接入任何机器" hint="先在概览页接入机器，这里会自动出现它的 SSH 别名。" />
+            ) : (
+              <EmptyState
+                title="机器还没有上报 SSH 信息"
+                hint={`面板里有 ${nodes.length} 台机器，但还没有一台上报过 sshd 配置和 host key。采集端会定时上报，上报之后机器会自动出现在这里；等了几分钟还是空的，确认一下采集端是不是较新的版本。`}
+              />
+            )}
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
@@ -307,11 +314,10 @@ function EndpointDialog({
 
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <Field label="别名" grow hint="敲 ssh <别名> 就能连上">
-            <input className="ds-input" value={alias} onChange={(e) => setAlias(e.target.value)} />
+            <TextInput value={alias} onChange={(e) => setAlias(e.target.value)} />
           </Field>
           <Field label="端口" hint="默认 22">
-            <input
-              className="ds-input"
+            <TextInput
               value={port}
               onChange={(e) => setPort(e.target.value)}
               style={{ width: 90 }}
@@ -327,8 +333,7 @@ function EndpointDialog({
               : `留空时使用 ${endpoint.effectiveHostname || '（面板还没采到地址）'}`
           }
         >
-          <input
-            className="ds-input"
+          <TextInput
             value={hostname}
             onChange={(e) => setHostname(e.target.value)}
             placeholder={endpoint.effectiveHostname}
@@ -346,15 +351,13 @@ function EndpointDialog({
 
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <Field label="默认账号" grow>
-            <input
-              className="ds-input"
+            <TextInput
               value={defaultUser}
               onChange={(e) => setDefaultUser(e.target.value)}
             />
           </Field>
           <Field label="跳板" grow hint="user@host 或另一个 Host 别名，留空表示直连">
-            <input
-              className="ds-input"
+            <TextInput
               value={proxyJump}
               onChange={(e) => setProxyJump(e.target.value)}
               placeholder="bastion"
@@ -363,8 +366,7 @@ function EndpointDialog({
         </div>
 
         <Field label="本地私钥路径" hint="写进生成的配置里，留空则由 ssh 自己挑">
-          <input
-            className="ds-input"
+          <TextInput
             value={identityFile}
             onChange={(e) => setIdentityFile(e.target.value)}
             placeholder="~/.ssh/id_ed25519"
@@ -578,14 +580,16 @@ function KeysTab() {
                 <div className="ds-text-caption text-ds-description" style={{ whiteSpace: 'nowrap' }}>
                   {k.grantCount > 0 ? `开着 ${k.grantCount} 台` : '未授权'}
                 </div>
-                <button
-                  className="ds-btn ds-btn-ghost ds-btn-s"
-                  style={{ color: 'var(--color-danger)' }}
-                  onClick={() => void remove(k)}
-                  title={k.grantCount > 0 ? '还有生效中的授权，需要先撤销' : '删除'}
-                >
-                  <IconTrash size={12} />
-                </button>
+                <Tooltip content={k.grantCount > 0 ? '还有生效中的授权，需要先撤销' : '删除'}>
+                  <button
+                    className="ds-btn ds-btn-ghost ds-btn-s"
+                    style={{ color: 'var(--color-danger)' }}
+                    onClick={() => void remove(k)}
+                    aria-label="删除公钥"
+                  >
+                    <IconTrash size={12} />
+                  </button>
+                </Tooltip>
               </div>
             ))}
           </div>
@@ -651,20 +655,18 @@ function AddKeyDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () =
         {error && <Alert tone="danger" title="添加失败">{error}</Alert>}
 
         <Field label="公钥" hint="以 ssh-ed25519 或 ssh-rsa 开头的一行">
-          <textarea
-            className="ds-input"
+          <TextArea
             value={publicKey}
             onChange={(e) => setPublicKey(e.target.value)}
             rows={4}
-            style={{ resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 12 }}
+            style={{ fontFamily: 'var(--font-mono)', fontSize: 12, wordBreak: 'break-all' }}
             placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5... you@mac"
             autoFocus
           />
         </Field>
 
         <Field label="标签" hint="留空则用公钥自带的注释">
-          <input
-            className="ds-input"
+          <TextInput
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             placeholder="MacBook Pro"
@@ -1017,8 +1019,7 @@ function GrantDialog({
             />
           </Field>
           <Field label="远程账号" grow>
-            <input
-              className="ds-input"
+            <TextInput
               value={remoteUser}
               onChange={(e) => {
                 setRemoteUser(e.target.value);
@@ -1053,8 +1054,7 @@ function GrantDialog({
               : '天数。0 表示永久'
           }
         >
-          <input
-            className="ds-input"
+          <TextInput
             value={ttlDays}
             onChange={(e) => {
               setTtlDays(e.target.value);
@@ -1075,24 +1075,20 @@ function GrantDialog({
                 : 'var(--ds-bg-sunken)',
             }}
           >
-            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={useAgent}
-                onChange={(e) => setUseAgent(e.target.checked)}
-                style={{ marginTop: 3 }}
-              />
-              <span>
-                <span className="ds-text-body-sm" style={{ fontWeight: 600 }}>
-                  经 agent 远程写入
-                </span>
-                <span className="ds-text-caption text-ds-description" style={{ display: 'block' }}>
+            {/* 用自绘复选框：这里原来是一个裸的系统复选框，和全站的勾选样式不是一套 */}
+            <Checkbox
+              tone="danger"
+              checked={useAgent}
+              onChange={setUseAgent}
+              label="经 agent 远程写入"
+              hint={
+                <>
                   不勾选时面板只生成命令，由你自己去机器上执行 —— 那样面板永远不具备
                   改动机器的能力。勾选后 agent 会直接改 authorized_keys，且目标机器的
                   agent 必须以 <code>-ssh-keys</code> 启动。
-                </span>
-              </span>
-            </label>
+                </>
+              }
+            />
           </div>
         )}
 

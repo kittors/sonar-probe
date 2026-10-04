@@ -7,6 +7,7 @@ import { Modal } from './Modal';
 import { Checkbox, Field } from './ui';
 import { bytes, count } from '../lib/format';
 import { CountryBadge } from './CountryBadge';
+import { TextInput } from './Input';
 
 const TTL_OPTIONS = [
   { value: 3600, label: '1 小时' },
@@ -219,8 +220,7 @@ export function BlockDialog({ nodeId, nodeName, peer, onClose, onDone }: Props) 
 
           {/* —— 原因 —— */}
           <Field label="备注原因">
-            <input
-              className="ds-input"
+            <TextInput
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="记录下为什么封它，方便以后回溯"

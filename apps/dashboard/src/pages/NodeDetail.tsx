@@ -48,14 +48,31 @@ import {
 import { NodeEditDialog } from '../components/NodeEditDialog';
 import { CountryBadge } from '../components/CountryBadge';
 import { Tooltip } from '../components/Tooltip';
-import { Chip, EmptyState, Pagination, SectionCard, Segmented, Skeleton, Stat, StatusDot, STATUS_TEXT } from '../components/ui';
 import {
+  Alert,
+  Badge,
+  Chip,
+  EmptyState,
+  Pagination,
+  SectionCard,
+  Segmented,
+  Skeleton,
+  Stat,
+  StatusBadge,
+  Tabs,
+} from '../components/ui';
+import {
+  IconActivity,
   IconBan,
-  IconChevronLeft,
+  IconCalendar,
+  IconCheck,
+  IconChevronRight,
   IconClock,
+  IconCopy,
+  IconCpu,
+  IconDown,
   IconEdit,
   IconExternal,
-  IconCpu,
   IconGlobe,
   IconLayers,
   IconServer,
@@ -63,25 +80,13 @@ import {
   IconTerminal,
   IconThermometer,
   IconTrash,
+  IconUp,
   IconWifiOff,
 } from '../components/icons';
 
 /** 负载曲线的时间窗，和流量的日期区间是两码事，别混用一个名字 */
 type MetricRange = '15m' | '1h' | '6h' | '24h';
 type Tab = 'load' | 'traffic' | 'security';
-
-/**
- * 详情页分标签而不是一路铺下去。
- *
- * 之前四大块叠在一条竖线上，看对端 IP 要滚过整整两屏图表。
- * 页头和实时快照常驻（那是"这台机器现在怎么样"的答案），
- * 其余按关注点分开，一次只看一件事。
- */
-const TABS: Array<{ value: Tab; label: string }> = [
-  { value: 'load', label: '负载' },
-  { value: 'traffic', label: '流量' },
-  { value: 'security', label: '安全' },
-];
 
 export function NodeDetail() {
   const { id } = useParams<{ id: string }>();
@@ -155,6 +160,8 @@ export function NodeDetail() {
   const { trafficDirection } = useSettings();
   const billedSum = useMemo(
     () => (daily.data ?? []).reduce((a, d) => a + trafficTotal(d.rx, d.tx), 0),
+    // trafficDirection 不在函数体里出现，但 trafficTotal 读的就是它 —— 口径变了要重算
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [daily.data, trafficDirection],
   );
   // 只计单向时把口径写出来，不然"合计"比柱子加起来少一半，看着像漏数据
@@ -179,7 +186,7 @@ export function NodeDetail() {
    * 还没拿到数据时给骨架，而不是一句"正在加载"。
    *
    * 刷新页面时 WebSocket 要重新握手，这段空窗有几百毫秒到几秒。用文字占位会让
-   * 整页先塌成一行字再撑开，视觉上就是"闪一下"；骨架保持和真实内容一样的骨架结构，
+   * 整页先塌成一行字再撑开，视觉上就是"闪一下"；骨架保持和真实内容一样的结构，
    * 数据到了只是填色，布局不跳。
    *
    * ready 为真才说明确实没有这台机器 —— 那时才该说它不存在。
@@ -188,9 +195,14 @@ export function NodeDetail() {
     return ready ? (
       <div className="ds-surface">
         <EmptyState
-          icon={<IconServer size={28} />}
+          icon={<IconServer size={22} />}
           title="找不到这台机器"
           hint="它可能已经从面板移除。返回概览看看还有哪些机器在管。"
+          action={
+            <Link to="/" className="ds-btn ds-btn-ghost">
+              返回机器概览
+            </Link>
+          }
         />
       </div>
     ) : (
@@ -199,10 +211,11 @@ export function NodeDetail() {
   }
 
   const m = node.metric;
+  const offline = node.status === 'offline';
   const memPct = m ? ratio(m.memUsed, node.memTotal) : 0;
   const diskPct = m ? ratio(m.diskUsed, node.diskTotal) : 0;
   const swapPct = m && node.swapTotal > 0 ? ratio(m.swapUsed, node.swapTotal) : 0;
-  const loadPct = m ? Math.min(100, (m.load1 / node.cpuCores) * 100) : 0;
+  const loadPct = m ? Math.min(100, (m.load1 / Math.max(1, node.cpuCores)) * 100) : 0;
   const expire = untilExpire(node.expireAt);
   // 服务端存的时候已经过滤过协议，这里再查一遍：库里可能有更早版本写进去的脏数据
   const panelUrl = safeUrl(node.panelUrl);
@@ -215,622 +228,531 @@ export function NodeDetail() {
     blocks.data?.filter((r) => r.state === 'active').map((r) => r.target) ?? [],
   );
 
-  function afterBlock(rule: BlockRule) {
+  // 安全页里两块都没权限看的话，这个标签就是一张白纸，不如不给
+  const showSecurity = can('traffic:peers') || can('block:view');
+  const tabs: Array<{ value: Tab; label: string; count?: number }> = [
+    { value: 'load', label: '负载' },
+    { value: 'traffic', label: '流量' },
+    ...(showSecurity
+      ? [{ value: 'security' as Tab, label: '安全', count: activeRules.length || undefined }]
+      : []),
+  ];
+  const activeTab: Tab = tabs.some((t) => t.value === tab) ? tab : 'load';
+
+  const billing =
+    node.price > 0
+      ? `${money(node.price, node.currency)} / ${
+          node.billingCycle === 'yearly' ? '年' : node.billingCycle === 'quarterly' ? '季' : '月'
+        }`
+      : undefined;
+
+  function afterBlock() {
     blocks.reload();
     peers.reload();
-    void rule;
   }
 
   return (
     <>
-      {/* —— 返回 —— */}
-      <Link
-        to="/"
-        className="ds-text-body-sm text-ds-description"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 3,
-          textDecoration: 'none',
-          marginBottom: 12,
-        }}
-      >
-        <IconChevronLeft size={14} />
-        返回概览
-      </Link>
+      <section className="ds-hero" style={{ display: 'block' }}>
+        <span className="ds-sq ds-sq-edge" style={{ left: 0, top: '100%' }} aria-hidden="true" />
+        <span className="ds-sq ds-sq-edge" style={{ left: '100%', top: '100%' }} aria-hidden="true" />
+        <nav className="ds-breadcrumb" aria-label="当前位置">
+          <Link to="/">机器概览</Link>
+          <IconChevronRight size={12} />
+          <span aria-current="page">{node.name}</span>
+        </nav>
 
-      {/* —— 页头 —— */}
-      <header
-        className="ds-animate-in"
-        style={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          gap: 14,
-          flexWrap: 'wrap',
-          marginBottom: 18,
-        }}
-      >
-        <div style={{ minWidth: 0, flex: '1 1 320px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
-            <StatusDot status={node.status} size={9} />
-            <h1
-              className="ds-text-h1 text-ds-primary"
-              style={{ margin: 0 }}
-            >
-              {node.name}
-            </h1>
+        {/* —— 页头 —— */}
+        <header className="ds-detail-head">
+          <span style={{ display: 'flex', paddingTop: 6 }}>
             <CountryBadge code={node.countryCode} size="lg" title={node.region} />
-            <Chip
-              color={
-                node.status === 'online'
-                  ? 'var(--color-ok)'
-                  : node.status === 'warning'
-                    ? 'var(--color-warn)'
-                    : 'var(--color-idle)'
-              }
+          </span>
+          {/* 伸缩基准取 240 而不是更大：手机上一旦放不下，旗帜会单独占一行，标题被挤到下面 */}
+          <div style={{ minWidth: 0, flex: '1 1 240px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <h1 className="ds-page-title">{node.name}</h1>
+              <StatusBadge status={node.status} />
+            </div>
+            <div
+              className="ds-page-desc"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 5 }}
             >
-              {STATUS_TEXT[node.status]}
-            </Chip>
-
-            {/*
-              操作跟标题放一起，而不是混进右边那排数字里 ——
-              "已运行/最后上报/到期"是在陈述事实，中间插一个按钮会让人先分辨
-              哪个是能点的。图标按钮无边框，安静地待在标题旁边。
-            */}
-            <span style={{ display: 'inline-flex', gap: 2, marginLeft: 2 }}>
-              {panelUrl && (
-                <Tooltip content={`在${node.provider || '服务商'}控制台打开`}>
-                  <a
-                    className="ds-btn-icon"
-                    href={panelUrl}
-                    target="_blank"
-                    // noreferrer 不只是隐私：没有它，目标页能通过 window.opener 把本页
-                    // 导航到钓鱼页面（反向标签劫持）
-                    rel="noopener noreferrer"
-                    aria-label="打开服务商控制台"
-                  >
-                    <IconExternal size={15} />
-                  </a>
-                </Tooltip>
-              )}
-              {can('node:manage') && (
-                <Tooltip content="编辑机器信息">
-                  <button
-                    className="ds-btn-icon"
-                    onClick={() => setEditing(true)}
-                    aria-label="编辑机器信息"
-                  >
-                    <IconEdit size={15} />
-                  </button>
-                </Tooltip>
-              )}
-            </span>
-          </div>
-          <p className="ds-text-body text-ds-description" style={{ margin: '6px 0 0' }}>
-            {/* provider 可能为空，用 filter 拼接避免出现连续的分隔符 */}
-            <span className="tnum">{node.ip}</span>
-            {[node.provider, node.region, node.hostname].filter(Boolean).map((x) => ` · ${x}`).join('')}
-          </p>
-          {node.tags.length > 0 && (
-            <div style={{ display: 'flex', gap: 5, marginTop: 9, flexWrap: 'wrap' }}>
-              {node.tags.map((t) => (
-                <Chip key={t}>{t}</Chip>
+              <CopyText text={node.ip} label="IP" />
+              {/* provider 可能为空，逐段拼接避免出现连续的分隔符 */}
+              {[node.provider, node.region, node.hostname].filter(Boolean).map((x) => (
+                <span key={x} style={{ display: 'contents' }}>
+                  <span style={{ color: 'var(--ds-text-disabled)' }}>·</span>
+                  <span>{x}</span>
+                </span>
               ))}
             </div>
-          )}
-        </div>
+            {node.tags.length > 0 && (
+              <div style={{ display: 'flex', gap: 5, marginTop: 10, flexWrap: 'wrap' }}>
+                {node.tags.map((t) => (
+                  <Chip key={t}>{t}</Chip>
+                ))}
+              </div>
+            )}
+          </div>
 
-        <div
-          style={{
-            display: 'flex',
-            gap: 22,
-            flexWrap: 'wrap',
-            alignItems: 'flex-start',
-            paddingTop: 4,
-          }}
-        >
-          <Stat label="已运行" value={m ? uptime(m.uptime) : '—'} />
-          <Stat
-            label="最后上报"
-            value={ago(node.lastSeen)}
-            color={node.status === 'offline' ? 'var(--color-warn)' : undefined}
-          />
-          {/* 没填到期时间就整个不显示。摆一个写着"未设置"的数字位，
-              占的是版面，给的是零信息 */}
-          {expire.known && (
-            <Stat
-              label="到期"
-              value={expire.text}
-              color={expire.urgent ? 'var(--color-warn)' : undefined}
-              hint={
-                node.price > 0
-                  ? `${money(node.price, node.currency)} / ${
-                      node.billingCycle === 'yearly'
-                        ? '年'
-                        : node.billingCycle === 'quarterly'
-                          ? '季'
-                          : '月'
-                    }`
-                  : undefined
-              }
-            />
-          )}
-        </div>
-      </header>
-
-      {node.status === 'offline' && (
-        <div
-          className="ds-surface"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '12px 16px',
-            marginBottom: 16,
-            borderColor: 'color-mix(in srgb, var(--color-warn) 28%, transparent)',
-            background: 'color-mix(in srgb, var(--color-warn) 6%, transparent)',
-          }}
-        >
-          <IconWifiOff size={16} style={{ color: 'var(--color-warn)' }} />
-          <span className="ds-text-body-sm text-ds-secondary">
-            这台机器已失联 {ago(node.lastSeen)}。下面展示的是断线前的最后一批数据。
-          </span>
-        </div>
-      )}
-
-      {/* —— 实时快照 —— */}
-      <section
-        className="ds-surface ds-animate-in"
-        style={{ padding: 18, marginBottom: 16, animationDelay: '60ms' }}
-      >
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(min(132px, 100%), 1fr))',
-            gap: 18,
-            alignItems: 'center',
-          }}
-        >
-          <RingCell
-            value={m?.cpu ?? 0}
-            label="CPU"
-            sub={`${node.cpuCores} 核`}
-            color={SERIES.cpu}
-            icon={<IconCpu size={13} />}
-          />
-          <RingCell
-            value={memPct}
-            label="内存"
-            sub={`${bytes(m?.memUsed ?? 0, 1)} / ${bytes(node.memTotal, 0)}`}
-            color={SERIES.mem}
-          />
-          <RingCell
-            value={diskPct}
-            label="磁盘"
-            sub={`${bytes(m?.diskUsed ?? 0, 0)} / ${bytes(node.diskTotal, 0)}`}
-            color={SERIES.disk}
-          />
           {/*
-            环里是"1 分钟负载占核心数的百分比"，和左边三个环同一口径 ——
-            四个环并排时混着绝对值和百分比，看的人得先分辨这个数是什么单位。
-            1/5/15 分钟的原始负载放在下面，对比趋势时仍然拿得到。
+            操作放在页头右侧，带文字的次级按钮。之前是标题旁边两个无字小图标，
+            不悬停根本不知道一个是"去服务商控制台"、一个是"编辑"。
           */}
-          <RingCell
-            value={loadPct}
-            label="负载"
-            sub={m ? `${m.load1.toFixed(2)} / ${m.load5.toFixed(2)} / ${m.load15.toFixed(2)}` : '—'}
-            color={SERIES.load}
-          />
-
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 13,
-              paddingLeft: 4,
-              borderLeft: '1px solid var(--ds-border)',
-            }}
-          >
-            <Stat label="实时上行" value={rate(m?.netTx ?? 0)} color={SERIES.tx} />
-            <Stat label="实时下行" value={rate(m?.netRx ?? 0)} color={SERIES.rx} />
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-            <Stat label="TCP 连接" value={count(m?.tcpConns ?? 0)} hint={`UDP ${count(m?.udpConns ?? 0)}`} />
-            <Stat label="进程数" value={count(m?.processes ?? 0)} />
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-            <Stat
-              label="交换分区"
-              value={node.swapTotal > 0 ? percent(swapPct, 0) : '未启用'}
-              hint={node.swapTotal > 0 ? bytes(node.swapTotal, 0) : undefined}
-              color={swapPct > 40 ? 'var(--color-warn)' : undefined}
-            />
-            <Stat
-              label="温度"
-              value={m?.tempC != null ? `${m.tempC.toFixed(0)}°C` : '不可用'}
-              color={m?.tempC != null && m.tempC > 75 ? 'var(--color-warn)' : undefined}
-            />
-          </div>
-        </div>
-
-        <div
-          className="ds-text-caption text-ds-description"
-          style={{
-            display: 'flex',
-            gap: 16,
-            flexWrap: 'wrap',
-            marginTop: 16,
-            paddingTop: 13,
-            borderTop: '1px solid var(--ds-border)',
-          }}
-        >
-          {/* 没有 node:hardware 权限时服务端会把这些字段清空，
-              直接拼接会渲染出 "Debian · · amd64" 这种带空段的字符串 */}
-          {node.cpuModel && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <IconCpu size={12} /> {node.cpuModel}
-            </span>
+          {(panelUrl || can('node:manage')) && (
+            <div className="ds-page-actions">
+              {panelUrl && (
+                <a
+                  className="ds-btn ds-btn-ghost"
+                  href={panelUrl}
+                  target="_blank"
+                  // noreferrer 不只是隐私：没有它，目标页能通过 window.opener 把本页
+                  // 导航到钓鱼页面（反向标签劫持）
+                  rel="noopener noreferrer"
+                >
+                  <IconExternal size={14} />
+                  {node.provider ? `${node.provider} 控制台` : '服务商控制台'}
+                </a>
+              )}
+              {can('node:manage') && (
+                <button className="ds-btn ds-btn-ghost" onClick={() => setEditing(true)}>
+                  <IconEdit size={14} />
+                  编辑
+                </button>
+              )}
+            </div>
           )}
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <IconLayers size={12} />{' '}
-            {[node.os, node.kernel, node.arch].filter(Boolean).join(' · ')}
-          </span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <IconThermometer size={12} /> 磁盘读 {rate(m?.diskRead ?? 0)} / 写 {rate(m?.diskWrite ?? 0)}
-          </span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <IconClock size={12} /> agent v{node.agentVersion}
-          </span>
-        </div>
+        </header>
+
+        {offline && (
+          <div style={{ marginTop: 18 }}>
+            <Alert tone="warn" icon={<IconWifiOff size={15} />} title="这台机器已失联">
+              最后一次上报在 {ago(node.lastSeen)}，下面展示的是断线前的最后一批数据。
+              采集端恢复上报后会自动刷新，不需要手动操作。
+            </Alert>
+          </div>
+        )}
       </section>
 
-      {/* —— 分区切换 —— */}
-      <div style={{ marginBottom: 14 }}>
-        <Segmented value={tab} onChange={setTab} options={TABS} />
+      {/* —— 事实陈列：这台机器是什么、跑了多久、什么时候到期 —— */}
+      <div className="ds-facts ds-animate-in">
+        <Fact icon={<IconClock size={12} />} k="已运行" v={m ? uptime(m.uptime) : '—'} />
+        <Fact
+          icon={<IconActivity size={12} />}
+          k="最后上报"
+          v={ago(node.lastSeen)}
+          tone={offline ? 'warn' : undefined}
+          sub={node.lastSeen ? new Date(node.lastSeen).toLocaleString('zh-CN', { hour12: false }) : undefined}
+        />
+        {/* 没填到期时间就整个不显示。摆一个写着"未设置"的格子，占的是版面，给的是零信息 */}
+        {expire.known && (
+          <Fact
+            icon={<IconCalendar size={12} />}
+            k="到期"
+            v={expire.text}
+            tone={expire.days < 0 ? 'danger' : expire.urgent ? 'warn' : undefined}
+            sub={billing}
+          />
+        )}
+        {/* 没有 node:hardware 权限时服务端会把这些字段清空，空的就不摆 */}
+        {node.os && (
+          <Fact
+            icon={<IconLayers size={12} />}
+            k="系统"
+            v={node.os}
+            sub={[node.kernel, node.arch].filter(Boolean).join(' · ')}
+          />
+        )}
+        {node.cpuModel && (
+          <Fact icon={<IconCpu size={12} />} k="处理器" v={node.cpuModel} sub={`${node.cpuCores} 核`} />
+        )}
+        <Fact icon={<IconTerminal size={12} />} k="采集端" v={node.agentVersion ? `v${node.agentVersion}` : '—'} />
       </div>
 
-      {/*
-        面板套一层带 key 的容器。
-        没有它，切换标签时 React 会认出两边顶层都是 SectionCard 从而复用同一个 DOM，
-        CSS 动画只在元素插入时触发，复用就不会重播 —— 表现就是内容"啪"地换掉。
-        key 变了才是真的卸载重建，动画才播得出来。
-      */}
-      <div key={tab} className="ds-tab-panel">
+      {/* —— 实时快照 —— */}
+      <div className="ds-snap-rings">
+        <RingCell value={m?.cpu ?? 0} empty={!m} label="CPU" sub={`${node.cpuCores} 核`} />
+        <RingCell
+          value={memPct}
+          empty={!m}
+          label="内存"
+          sub={`${bytes(m?.memUsed ?? 0, 1)} / ${bytes(node.memTotal, 0)}`}
+        />
+        <RingCell
+          value={diskPct}
+          empty={!m}
+          label="磁盘"
+          sub={`${bytes(m?.diskUsed ?? 0, 0)} / ${bytes(node.diskTotal, 0)}`}
+        />
+        {/*
+          环里是"1 分钟负载占核心数的百分比"，和左边三个环同一口径 ——
+          四个环并排时混着绝对值和百分比，看的人得先分辨这个数是什么单位。
+          1/5/15 分钟的原始负载放在下面，对比趋势时仍然拿得到。
+        */}
+        <RingCell
+          value={loadPct}
+          empty={!m}
+          label="负载"
+          sub={m ? `${m.load1.toFixed(2)} · ${m.load5.toFixed(2)} · ${m.load15.toFixed(2)}` : '—'}
+          hint="1 分钟负载占核心数的比例；下面三个数是 1 / 5 / 15 分钟的原始负载"
+        />
+      </div>
 
-      {/* —— 负载详情 —— */}
-      {tab === 'load' && (
-      <SectionCard
-        className="ds-animate-in"
-        style={{ marginBottom: 16 }}
-        title="负载详情"
-        subtitle={
-          metrics.data?.length
-            ? `${metrics.data.length} 个采样点 · ${clockTime(ts[0] ?? 0)} 至 ${clockTime(ts[ts.length - 1] ?? 0)}`
-            : '正在加载采样数据'
-        }
-        actions={
-          <Segmented
-            value={range}
-            onChange={setRange}
-            options={[
-              { value: '15m', label: '15 分钟' },
-              { value: '1h', label: '1 小时' },
-              { value: '6h', label: '6 小时' },
-              { value: '24h', label: '24 小时' },
-            ]}
-          />
-        }
-      >
-        {metrics.loading && !metrics.data ? (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))',
-              gap: 22,
-            }}
-          >
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} style={{ display: 'grid', gap: 8 }}>
-                <Skeleton height={13} width={96} />
-                <Skeleton height={186} radius={10} />
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div
-            /*
-             * key 跟着数据窗口走：切时间范围时整块重新挂载，播一次淡入。
-             * 不这么做的话曲线会从旧数据"啪"地跳到新数据 —— SVG 的 d 属性没法
-             * 靠 CSS 过渡，点数还不一样，只能整体换。
-             *
-             * 加载期间旧图留在原地并轻微降透明，比先清空再填要稳得多。
-             */
-            key={chartKey}
-            className="ds-chart-swap"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))',
-              gap: 22,
-              opacity: metrics.loading ? 0.5 : 1,
-              transition: 'opacity 0.18s ease',
-            }}
-          >
-            <ChartBlock title="CPU 与负载" legend={[['CPU', SERIES.cpu], ['1 分钟负载', SERIES.load]]}>
-              <TimeChart
-                timestamps={ts}
-                yMax={100}
-                yFormat={(v) => `${v.toFixed(0)}%`}
-                series={[
-                  {
-                    key: 'cpu',
-                    label: 'CPU',
-                    color: SERIES.cpu,
-                    values: metrics.data?.map((x) => x.cpu) ?? [],
-                    format: (v) => `${v.toFixed(1)}%`,
-                  },
-                  {
-                    key: 'load',
-                    label: '1 分钟负载',
-                    color: SERIES.load,
-                    // 负载换算成"占核心数的百分比"才能和 CPU 同轴比较
-                    values: metrics.data?.map((x) => Math.min(100, (x.load1 / node.cpuCores) * 100)) ?? [],
-                    format: (v) => ((v / 100) * node.cpuCores).toFixed(2),
-                  },
-                ]}
-              />
-            </ChartBlock>
+      <div className="ds-snap-info">
+        <InfoCell
+          title="网络"
+          rows={[
+            [
+              <>
+                <IconUp size={12} style={{ color: SERIES.tx }} /> 上行
+              </>,
+              rate(m?.netTx ?? 0),
+            ],
+            [
+              <>
+                <IconDown size={12} style={{ color: SERIES.rx }} /> 下行
+              </>,
+              rate(m?.netRx ?? 0),
+            ],
+          ]}
+        />
+        <InfoCell
+          title="连接与进程"
+          rows={[
+            ['TCP 连接', count(m?.tcpConns ?? 0)],
+            ['UDP 连接', count(m?.udpConns ?? 0)],
+            ['进程', count(m?.processes ?? 0)],
+          ]}
+        />
+        <InfoCell
+          title="磁盘与温度"
+          rows={[
+            ['读 / 写', `${rate(m?.diskRead ?? 0)} / ${rate(m?.diskWrite ?? 0)}`],
+            [
+              '交换分区',
+              node.swapTotal > 0 ? (
+                <span style={{ color: swapPct > 40 ? 'var(--color-warn)' : undefined }}>
+                  {percent(swapPct, 0)} · {bytes(node.swapTotal, 0)}
+                </span>
+              ) : (
+                '未启用'
+              ),
+            ],
+            [
+              <>
+                <IconThermometer size={12} /> 温度
+              </>,
+              m?.tempC != null ? (
+                <span style={{ color: m.tempC > 75 ? 'var(--color-warn)' : undefined }}>{m.tempC.toFixed(0)}°C</span>
+              ) : (
+                '不可用'
+              ),
+            ],
+          ]}
+        />
+      </div>
 
-            <ChartBlock title="内存占用" legend={[['已用内存', SERIES.mem]]}>
-              <TimeChart
-                timestamps={ts}
-                fill
-                yMax={100}
-                yFormat={(v) => `${v.toFixed(0)}%`}
-                series={[
-                  {
-                    key: 'mem',
-                    label: '内存',
-                    color: SERIES.mem,
-                    values: metrics.data?.map((x) => ratio(x.memUsed, node.memTotal)) ?? [],
-                    format: (v) => `${v.toFixed(1)}%  ${bytes((v / 100) * node.memTotal, 1)}`,
-                  },
-                ]}
-              />
-            </ChartBlock>
+      {/* —— 分区切换 —— */}
+      <section className="ds-sec" style={{ paddingTop: 6 }}>
+        <div style={{ marginBottom: 22 }}>
+          <Tabs value={activeTab} onChange={setTab} options={tabs} ariaLabel="详情分区" />
+        </div>
 
-            <ChartBlock title="网络吞吐" legend={[['上行', SERIES.tx], ['下行', SERIES.rx]]}>
-              <TimeChart
-                timestamps={ts}
-                byteScale
-                yFormat={(v) => bytes(v, 0)}
-                series={[
-                  {
-                    key: 'tx',
-                    label: '上行',
-                    color: SERIES.tx,
-                    values: metrics.data?.map((x) => x.netTx) ?? [],
-                    format: (v) => rate(v),
-                  },
-                  {
-                    key: 'rx',
-                    label: '下行',
-                    color: SERIES.rx,
-                    values: metrics.data?.map((x) => x.netRx) ?? [],
-                    format: (v) => rate(v),
-                  },
-                ]}
-              />
-            </ChartBlock>
-
-            <ChartBlock title="磁盘 IO" legend={[['读', SERIES.read], ['写', SERIES.write]]}>
-              <TimeChart
-                timestamps={ts}
-                byteScale
-                yFormat={(v) => bytes(v, 0)}
-                series={[
-                  {
-                    key: 'read',
-                    label: '读取',
-                    color: SERIES.read,
-                    values: metrics.data?.map((x) => x.diskRead) ?? [],
-                    format: (v) => rate(v),
-                  },
-                  {
-                    key: 'write',
-                    label: '写入',
-                    color: SERIES.write,
-                    values: metrics.data?.map((x) => x.diskWrite) ?? [],
-                    format: (v) => rate(v),
-                  },
-                ]}
-              />
-            </ChartBlock>
-          </div>
-        )}
-      </SectionCard>
-      )}
-
-      {/* —— 流量分析 —— */}
-      {tab === 'traffic' && (
-      <div
-        className="ds-animate-in"
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))',
-          gap: 16,
-          marginBottom: 16,
-        }}
-      >
-        <SectionCard
-          title="流量消耗"
-          subtitle={
-            daily.data
-              ? `${rangeLabel(trafficRange, activePreset)} · 合计 ${bytes(billedSum)}${directionNote}`
-              : '加载中'
-          }
-          actions={
-            <DateRangePicker
-              value={trafficRange}
-              onChange={pickRange}
-              presets={presets}
-              activePreset={activePreset}
-            />
-          }
-        >
-          {daily.loading && !daily.data ? (
-            <Skeleton height={200} />
-          ) : (
+        {/*
+          面板套一层带 key 的容器。
+          没有它，切换标签时 React 会复用同一个 DOM，CSS 动画只在元素插入时触发，
+          复用就不会重播 —— 表现就是内容"啪"地换掉。key 变了才是真的卸载重建。
+        */}
+        <div key={activeTab} className="ds-tab-panel">
+          {/* —— 负载 —— */}
+          {activeTab === 'load' && (
             <>
-              {/* 配额进度排在柱状图之前：先回答"还能用多少"，再看"每天用了多少" */}
-              <QuotaBar node={node} />
-              <TrafficBars data={daily.data ?? []} height={206} rxColor={SERIES.rx} txColor={SERIES.tx} />
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 18,
-                  marginTop: 14,
-                  paddingTop: 13,
-                  borderTop: '1px solid var(--ds-border)',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <Stat
-                  /* 周期未必是自然月（可按开通日重置），所以标签不能写死"本月" */
-                  label="本周期已用"
-                  value={bytes(node.trafficUsed)}
-                  hint={
-                    [
-                      `${monthDay(node.cycleStart)} – ${monthDay(cycleLastDay(node.cycleEnd))}`,
-                      node.trafficQuota > 0
-                        ? `配额 ${bytes(node.trafficQuota, 0)} · ${percent(ratio(node.trafficUsed, node.trafficQuota), 0)}`
-                        : '不限量',
-                      node.trafficOffset !== 0 ? '含人工校准' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')
-                  }
-                  color={
-                    // 门槛跟设置里的「配额提醒」走。写死 0.85 的话，这台机器
-                    // 在概览页已经被标成"接近配额"，点进详情却还是黑字
-                    node.trafficQuota > 0 &&
-                    isNearQuota(ratio(node.trafficUsed, node.trafficQuota))
-                      ? 'var(--color-warn)'
-                      : undefined
-                  }
-                />
-                <Stat
-                  label="日均"
-                  value={bytes(billedSum / Math.max(1, daily.data?.length ?? 1))}
-                />
-                <Stat
-                  label="累计上行"
-                  value={bytes(daily.data?.reduce((a, d) => a + d.tx, 0) ?? 0)}
-                  color={SERIES.tx}
-                />
-                <Stat
-                  label="累计下行"
-                  value={bytes(daily.data?.reduce((a, d) => a + d.rx, 0) ?? 0)}
-                  color={SERIES.rx}
+              <div className="ds-section-bar">
+                <span className="ds-text-body-sm text-ds-description tnum">
+                  {metrics.data?.length
+                    ? `${metrics.data.length} 个采样点 · ${clockTime(ts[0] ?? 0)} 至 ${clockTime(ts[ts.length - 1] ?? 0)}`
+                    : '正在加载采样数据'}
+                </span>
+                <Segmented
+                  value={range}
+                  onChange={setRange}
+                  ariaLabel="时间范围"
+                  options={[
+                    { value: '15m', label: '15 分钟' },
+                    { value: '1h', label: '1 小时' },
+                    { value: '6h', label: '6 小时' },
+                    { value: '24h', label: '24 小时' },
+                  ]}
                 />
               </div>
+
+              {metrics.loading && !metrics.data ? (
+                <div className="ds-chart-grid">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="ds-chart-card" style={{ display: 'grid', gap: 12 }}>
+                      <Skeleton height={14} width={110} />
+                      <Skeleton height={200} radius={6} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div
+                  /*
+                   * key 跟着数据窗口走：切时间范围时整块重新挂载，播一次淡入。
+                   * SVG 的 d 属性没法靠 CSS 过渡，点数还不一样，只能整体换。
+                   * 加载期间旧图留在原地并轻微降透明，比先清空再填要稳得多。
+                   */
+                  key={chartKey}
+                  className="ds-chart-grid ds-chart-swap"
+                  style={{ opacity: metrics.loading ? 0.55 : 1, transition: 'opacity 0.18s ease' }}
+                >
+                  <ChartCard title="CPU 与负载" legend={[['CPU', SERIES.cpu], ['1 分钟负载', SERIES.load]]}>
+                    <TimeChart
+                      timestamps={ts}
+                      yMax={100}
+                      yFormat={(v) => `${v.toFixed(0)}%`}
+                      series={[
+                        {
+                          key: 'cpu',
+                          label: 'CPU',
+                          color: SERIES.cpu,
+                          values: metrics.data?.map((x) => x.cpu) ?? [],
+                          format: (v) => `${v.toFixed(1)}%`,
+                        },
+                        {
+                          key: 'load',
+                          label: '1 分钟负载',
+                          color: SERIES.load,
+                          // 负载换算成"占核心数的百分比"才能和 CPU 同轴比较
+                          values:
+                            metrics.data?.map((x) => Math.min(100, (x.load1 / Math.max(1, node.cpuCores)) * 100)) ?? [],
+                          format: (v) => ((v / 100) * node.cpuCores).toFixed(2),
+                        },
+                      ]}
+                    />
+                  </ChartCard>
+
+                  <ChartCard title="内存占用" legend={[['已用内存', SERIES.mem]]}>
+                    <TimeChart
+                      timestamps={ts}
+                      fill
+                      yMax={100}
+                      yFormat={(v) => `${v.toFixed(0)}%`}
+                      series={[
+                        {
+                          key: 'mem',
+                          label: '内存',
+                          color: SERIES.mem,
+                          values: metrics.data?.map((x) => ratio(x.memUsed, node.memTotal)) ?? [],
+                          format: (v) => `${v.toFixed(1)}%  ${bytes((v / 100) * node.memTotal, 1)}`,
+                        },
+                      ]}
+                    />
+                  </ChartCard>
+
+                  <ChartCard title="网络吞吐" legend={[['上行', SERIES.tx], ['下行', SERIES.rx]]}>
+                    <TimeChart
+                      timestamps={ts}
+                      byteScale
+                      yFormat={(v) => bytes(v, 0)}
+                      series={[
+                        {
+                          key: 'tx',
+                          label: '上行',
+                          color: SERIES.tx,
+                          values: metrics.data?.map((x) => x.netTx) ?? [],
+                          format: (v) => rate(v),
+                        },
+                        {
+                          key: 'rx',
+                          label: '下行',
+                          color: SERIES.rx,
+                          values: metrics.data?.map((x) => x.netRx) ?? [],
+                          format: (v) => rate(v),
+                        },
+                      ]}
+                    />
+                  </ChartCard>
+
+                  <ChartCard title="磁盘 IO" legend={[['读', SERIES.read], ['写', SERIES.write]]}>
+                    <TimeChart
+                      timestamps={ts}
+                      byteScale
+                      yFormat={(v) => bytes(v, 0)}
+                      series={[
+                        {
+                          key: 'read',
+                          label: '读取',
+                          color: SERIES.read,
+                          values: metrics.data?.map((x) => x.diskRead) ?? [],
+                          format: (v) => rate(v),
+                        },
+                        {
+                          key: 'write',
+                          label: '写入',
+                          color: SERIES.write,
+                          values: metrics.data?.map((x) => x.diskWrite) ?? [],
+                          format: (v) => rate(v),
+                        },
+                      ]}
+                    />
+                  </ChartCard>
+                </div>
+              )}
             </>
           )}
-        </SectionCard>
 
-        {can('traffic:services') && (
-          <SectionCard
-            title="流量都被谁吃了"
-            subtitle={`按进程/服务归因 · ${rangeLabel(trafficRange, activePreset)}`}
-            actions={<IconLayers size={14} style={{ color: 'var(--ds-text-description)' }} />}
-          >
-            {services.loading && !services.data ? (
-              <Skeleton height={220} />
-            ) : (
-              <>
-                <AttributionCoverage
-                  attributed={(services.data ?? []).reduce((a, s) => a + s.rx + s.tx, 0)}
-                  total={(daily.data ?? []).reduce((a, d) => a + d.rx + d.tx, 0)}
-                />
-                <ServiceBreakdown data={services.data ?? []} />
-              </>
-            )}
-          </SectionCard>
-        )}
-      </div>
-      )}
+          {/* —— 流量 —— */}
+          {activeTab === 'traffic' && (
+            <div className="ds-chart-grid">
+              <SectionCard
+                title="流量消耗"
+                subtitle={
+                  daily.data
+                    ? `${rangeLabel(trafficRange, activePreset)} · 合计 ${bytes(billedSum)}${directionNote}`
+                    : '加载中'
+                }
+                actions={
+                  <DateRangePicker
+                    value={trafficRange}
+                    onChange={pickRange}
+                    presets={presets}
+                    activePreset={activePreset}
+                  />
+                }
+              >
+                {daily.loading && !daily.data ? (
+                  <Skeleton height={200} />
+                ) : (
+                  <>
+                    {/* 配额进度排在柱状图之前：先回答"还能用多少"，再看"每天用了多少" */}
+                    <QuotaBar node={node} />
+                    <TrafficBars data={daily.data ?? []} height={206} rxColor={SERIES.rx} txColor={SERIES.tx} />
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                        gap: 16,
+                        marginTop: 16,
+                        paddingTop: 16,
+                        borderTop: '1px solid var(--ds-divider)',
+                      }}
+                    >
+                      <Stat
+                        /* 周期未必是自然月（可按开通日重置），所以标签不能写死"本月" */
+                        label="本周期已用"
+                        value={bytes(node.trafficUsed)}
+                        hint={
+                          [
+                            `${monthDay(node.cycleStart)} – ${monthDay(cycleLastDay(node.cycleEnd))}`,
+                            node.trafficOffset !== 0 ? '含人工校准' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
+                        }
+                        color={
+                          // 门槛跟设置里的「配额提醒」走。写死 0.85 的话，这台机器
+                          // 在概览页已经被标成"接近配额"，点进详情却还是黑字
+                          node.trafficQuota > 0 && isNearQuota(ratio(node.trafficUsed, node.trafficQuota))
+                            ? 'var(--color-warn)'
+                            : undefined
+                        }
+                      />
+                      <Stat label="日均" value={bytes(billedSum / Math.max(1, daily.data?.length ?? 1))} />
+                      <Stat
+                        label="累计上行"
+                        value={bytes(daily.data?.reduce((a, d) => a + d.tx, 0) ?? 0)}
+                        hint={<LegendDot color={SERIES.tx} />}
+                      />
+                      <Stat
+                        label="累计下行"
+                        value={bytes(daily.data?.reduce((a, d) => a + d.rx, 0) ?? 0)}
+                        hint={<LegendDot color={SERIES.rx} />}
+                      />
+                    </div>
+                  </>
+                )}
+              </SectionCard>
 
-      {tab === 'security' && (
-        <>
-      {/* —— 对端 IP —— */}
-      {can('traffic:peers') && (
-        <SectionCard
-          className="ds-animate-in"
-          style={{ marginBottom: 16, animationDelay: '190ms' }}
-          title="对端 IP 流量"
-          subtitle={`${rangeLabel(trafficRange, activePreset)} · 按累计流量排序，可直接对可疑来源下封禁`}
-          padded={false}
-          actions={
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="ds-chip">
-                <IconGlobe size={11} />
-                {peers.data?.length ?? 0} 个来源
-              </span>
-              {/* 和流量页共用同一个区间。两边各管各的话，
-                  "谁吃了流量"和"谁连过来"就对不上账了 */}
-              <DateRangePicker
-                value={trafficRange}
-                onChange={pickRange}
-                presets={presets}
-                activePreset={activePreset}
-              />
+              {can('traffic:services') && (
+                <SectionCard
+                  title="流量都被谁吃了"
+                  subtitle={`按进程 / 服务归因 · ${rangeLabel(trafficRange, activePreset)}`}
+                >
+                  {services.loading && !services.data ? (
+                    <Skeleton height={220} />
+                  ) : (
+                    <>
+                      <AttributionCoverage
+                        attributed={(services.data ?? []).reduce((a, s) => a + s.rx + s.tx, 0)}
+                        total={(daily.data ?? []).reduce((a, d) => a + d.rx + d.tx, 0)}
+                      />
+                      <ServiceBreakdown data={services.data ?? []} />
+                    </>
+                  )}
+                </SectionCard>
+              )}
             </div>
-          }
-        >
-          {peers.loading && !peers.data ? (
-            <div style={{ padding: 18 }}>
-              <Skeleton height={220} />
-            </div>
-          ) : (
-            <PeerTable
-              peers={peers.data ?? []}
-              blockedIps={blockedIps}
-              onBlock={setBlockTarget}
-              canBlock={can('block:dryrun')}
-            />
           )}
-        </SectionCard>
-      )}
 
-      {/* —— 封禁规则 —— */}
-      {can('block:view') && (
-        <SectionCard
-          className="ds-animate-in"
-          style={{ animationDelay: '230ms' }}
-          title="封禁规则"
-          subtitle={
-            activeRules.length > 0
-              ? `${activeRules.filter((r) => r.state === 'active').length} 条生效中，${activeRules.filter((r) => r.state === 'pending').length} 条待下发`
-              : '暂无规则'
-          }
-          padded={false}
-          actions={<IconShield size={14} style={{ color: 'var(--ds-text-description)' }} />}
-        >
-          <RuleList
-            rules={blocks.data ?? []}
-            canRemove={can('block:remove')}
-            onRemoved={() => {
-              blocks.reload();
-              peers.reload();
-            }}
-          />
-        </SectionCard>
-      )}
-        </>
-      )}
+          {/* —— 安全 —— */}
+          {activeTab === 'security' && (
+            <div style={{ display: 'grid', gap: 16 }}>
+              {can('traffic:peers') && (
+                <SectionCard
+                  title="对端 IP 流量"
+                  subtitle={`${rangeLabel(trafficRange, activePreset)} · 按累计流量排序，可直接对可疑来源下封禁`}
+                  padded={false}
+                  actions={
+                    /* 和流量页共用同一个区间。两边各管各的话，
+                       "谁吃了流量"和"谁连过来"就对不上账了 */
+                    <DateRangePicker
+                      value={trafficRange}
+                      onChange={pickRange}
+                      presets={presets}
+                      activePreset={activePreset}
+                    />
+                  }
+                >
+                  {peers.loading && !peers.data ? (
+                    <div style={{ padding: 20 }}>
+                      <Skeleton height={220} />
+                    </div>
+                  ) : (
+                    <PeerTable
+                      peers={peers.data ?? []}
+                      blockedIps={blockedIps}
+                      onBlock={setBlockTarget}
+                      canBlock={can('block:dryrun')}
+                    />
+                  )}
+                </SectionCard>
+              )}
 
-      </div>
+              {can('block:view') && (
+                <SectionCard
+                  title="封禁规则"
+                  subtitle={
+                    activeRules.length > 0
+                      ? `${activeRules.filter((r) => r.state === 'active').length} 条生效中，${activeRules.filter((r) => r.state === 'pending').length} 条待下发`
+                      : '暂无生效中的规则'
+                  }
+                  padded={false}
+                >
+                  <RuleList
+                    rules={blocks.data ?? []}
+                    canRemove={can('block:remove')}
+                    onRemoved={() => {
+                      blocks.reload();
+                      peers.reload();
+                    }}
+                  />
+                </SectionCard>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
 
       {editing && (
         <NodeEditDialog
@@ -861,57 +783,120 @@ export function NodeDetail() {
 // ————————————————————————————————————————————————————————
 
 /**
+ * 可复制的一段文字（IP、主机名）。
+ *
+ * 打了码的地址（带 *）复制出来也用不了，那种情况只显示不给按钮。
+ */
+function CopyText({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const masked = text.includes('*');
+  if (masked) return <span className="tnum">{text}</span>;
+  return (
+    <Tooltip content={copied ? '已复制' : `复制${label}`}>
+      <button
+        type="button"
+        className="ds-copy tnum"
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1400);
+          });
+        }}
+      >
+        {text}
+        {copied ? <IconCheck size={13} style={{ color: 'var(--color-ok)' }} /> : <IconCopy size={13} />}
+      </button>
+    </Tooltip>
+  );
+}
+
+function Fact({
+  icon,
+  k,
+  v,
+  sub,
+  tone,
+}: {
+  icon?: React.ReactNode;
+  k: string;
+  v: React.ReactNode;
+  sub?: React.ReactNode;
+  tone?: 'warn' | 'danger';
+}) {
+  return (
+    <div className="ds-fact">
+      <div className="ds-fact-k">
+        {icon}
+        {k}
+      </div>
+      <div
+        className="ds-fact-v"
+        style={
+          tone
+            ? { color: `color-mix(in srgb, var(--color-${tone}) 80%, var(--ds-text-primary))` }
+            : undefined
+        }
+      >
+        {v}
+      </div>
+      {sub && <div className="ds-fact-sub">{sub}</div>}
+    </div>
+  );
+}
+
+function InfoCell({ title, rows }: { title: string; rows: Array<[React.ReactNode, React.ReactNode]> }) {
+  return (
+    <div className="ds-snap-cell ds-snap-cell-col">
+      <div className="ds-text-caption text-ds-description" style={{ fontWeight: 500 }}>
+        {title}
+      </div>
+      <div style={{ display: 'grid', gap: 7 }}>
+        {rows.map(([k, v], i) => (
+          <div key={i} className="ds-kv">
+            <span>{k}</span>
+            <span>{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LegendDot({ color }: { color: string }) {
+  return <span style={{ display: 'inline-block', width: 14, height: 3, borderRadius: 2, background: color }} />;
+}
+
+/**
  * 详情页骨架。
  *
- * 形状要贴着真实布局走：页头一行标题 + 一行副信息，下面是实时快照卡片里的
- * 四个环 + 右侧指标，再下面是标签栏。骨架和内容的高度对不上的话，
- * 数据一到页面就会跳一下，那还不如不做。
+ * 形状贴着真实布局走：面包屑、页头、事实带、四个环、三张读数卡、标签栏。
+ * 骨架和内容的高度对不上的话，数据一到页面就会跳一下，那还不如不做。
  */
 function NodeDetailSkeleton() {
   return (
     <div className="ds-fade-in" aria-busy="true" aria-label="正在加载机器信息">
-      <Skeleton height={13} width={64} style={{ marginBottom: 14 }} />
-
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-          <Skeleton height={9} width={9} radius={999} />
-          <Skeleton height={28} width={220} />
-          <Skeleton height={20} width={26} radius={4} />
-          <Skeleton height={20} width={48} radius={999} />
-        </div>
-        <Skeleton height={14} width={320} />
-        <div style={{ display: 'flex', gap: 5, marginTop: 10 }}>
-          <Skeleton height={20} width={44} radius={999} />
-          <Skeleton height={20} width={52} radius={999} />
+      <Skeleton height={13} width={160} style={{ marginBottom: 14 }} />
+      <div style={{ display: 'flex', gap: 14, marginBottom: 22 }}>
+        <Skeleton height={20} width={26} radius={3} style={{ marginTop: 6 }} />
+        <div style={{ flex: 1, display: 'grid', gap: 9 }}>
+          <Skeleton height={28} width={240} />
+          <Skeleton height={14} width={340} />
         </div>
       </div>
-
-      <div className="ds-glass-card" style={{ padding: 18, marginBottom: 16 }}>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))',
-            gap: 18,
-            alignItems: 'center',
-          }}
-        >
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} style={{ display: 'grid', justifyItems: 'center', gap: 9 }}>
-              <Skeleton height={84} width={84} radius={999} />
-              <Skeleton height={12} width={44} />
+      <Skeleton height={64} radius={8} style={{ marginBottom: 16 }} />
+      <div className="ds-snap-rings">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="ds-snap-cell">
+            <Skeleton height={64} width={64} radius={999} />
+            <div style={{ flex: 1, display: 'grid', gap: 8 }}>
+              <Skeleton height={12} width={48} />
+              <Skeleton height={12} width="70%" />
             </div>
-          ))}
-          {[0, 1, 2].map((i) => (
-            <div key={`m${i}`} style={{ display: 'grid', gap: 8 }}>
-              <Skeleton height={12} width={56} />
-              <Skeleton height={18} width={82} />
-            </div>
-          ))}
-        </div>
+          </div>
+        ))}
       </div>
-
-      <Skeleton height={34} width={190} radius={10} style={{ marginBottom: 16 }} />
-      <Skeleton height={280} radius={16} />
+      <Skeleton height={40} width={240} radius={6} style={{ margin: '8px 0 18px' }} />
+      <Skeleton height={260} radius={8} />
     </div>
   );
 }
@@ -1016,37 +1001,40 @@ function QuotaBar({ node }: { node: NodeState }) {
   );
 }
 
+/**
+ * 一个环 + 名称 + 副读数。四个环统一用品牌蓝，越线才变黄变红 ——
+ * 之前负载环固定是琥珀色，和"告警黄"撞色，正常的负载看起来也像出了事。
+ */
 function RingCell({
   value,
   label,
   sub,
-  color,
-  icon,
+  hint,
+  empty,
 }: {
   value: number;
   label: string;
   sub: string;
-  color: string;
-  icon?: React.ReactNode;
+  hint?: string;
+  empty?: boolean;
 }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7 }}>
-      <Ring value={value} color={color} size={86} />
-      <div style={{ textAlign: 'center' }}>
-        <div
-          className="ds-text-caption text-ds-secondary"
-          style={{ display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center', fontWeight: 500 }}
-        >
-          {icon}
+  const cell = (
+    <div className="ds-snap-cell">
+      <Ring value={value} size={64} thickness={6} label={label} empty={empty} />
+      <div style={{ minWidth: 0 }}>
+        <div className="ds-text-body-sm" style={{ fontWeight: 600, color: 'var(--ds-text-primary)' }}>
           {label}
         </div>
-        <div className="ds-text-caption text-ds-description tnum">{sub}</div>
+        <div className="ds-text-caption text-ds-description tnum ds-ellipsis" style={{ marginTop: 2 }}>
+          {sub}
+        </div>
       </div>
     </div>
   );
+  return hint ? <Tooltip content={hint}>{cell}</Tooltip> : cell;
 }
 
-function ChartBlock({
+function ChartCard({
   title,
   legend,
   children,
@@ -1056,27 +1044,24 @@ function ChartBlock({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ minWidth: 0 }}>
+    <div className="ds-chart-card">
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'space-between',
           gap: 12,
-          marginBottom: 6,
+          marginBottom: 8,
           flexWrap: 'wrap',
         }}
       >
-        <span className="ds-text-body-sm" style={{ fontWeight: 600, color: 'var(--ds-text-primary)' }}>
+        <span className="ds-card-title" style={{ fontSize: 14 }}>
           {title}
         </span>
-        <span style={{ display: 'flex', gap: 10 }}>
+        <span className="ds-legend">
           {legend.map(([label, color]) => (
-            <span
-              key={label}
-              className="ds-text-caption text-ds-description"
-              style={{ display: 'flex', alignItems: 'center', gap: 4 }}
-            >
-              <span style={{ width: 7, height: 7, borderRadius: 2, background: color }} />
+            <span key={label}>
+              <i style={{ background: color }} />
               {label}
             </span>
           ))}
@@ -1192,12 +1177,9 @@ function ServiceBreakdown({ data }: { data: Array<import('../lib/types').Service
             s.category === 'closed' ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 {s.service}
-                <span
-                  className="ds-chip"
-                  title="这些连接在采集时已经关闭，无法再对应到具体进程。属于正常现象，占比通常很低。"
-                >
-                  连接已关闭
-                </span>
+                <Tooltip content="这些连接在采集时已经关闭，无法再对应到具体进程。属于正常现象，占比通常很低。">
+                  <span className="ds-chip">连接已关闭</span>
+                </Tooltip>
               </span>
             ) : (
               s.service
@@ -1234,7 +1216,8 @@ function PeerTable({
   const [onlySuspicious, setOnlySuspicious] = useState(false);
   const [page, setPage] = useState(0);
 
-  const filtered = onlySuspicious ? peers.filter((p) => p.threatScore >= 40) : peers;
+  const suspicious = peers.filter((p) => p.threatScore >= 40);
+  const filtered = onlySuspicious ? suspicious : peers;
   // 换筛选条件后停在第 3 页会看到空列表，回到第一页
   useEffect(() => setPage(0), [onlySuspicious, peers.length]);
 
@@ -1244,7 +1227,7 @@ function PeerTable({
   if (peers.length === 0) {
     return (
       <EmptyState
-        icon={<IconGlobe size={26} />}
+        icon={<IconGlobe size={22} />}
         title="还没有对端流量数据"
         hint="采集端聚合 conntrack 之后，所有连过这台机器的地址都会列在这里。"
       />
@@ -1257,64 +1240,54 @@ function PeerTable({
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          padding: '10px 18px',
-          borderBottom: '1px solid var(--ds-border)',
+          gap: 12,
+          padding: '12px 22px',
+          borderBottom: '1px solid var(--ds-divider)',
+          flexWrap: 'wrap',
         }}
       >
         <Segmented
+          size="s"
           value={onlySuspicious ? 'sus' : 'all'}
           onChange={(v) => setOnlySuspicious(v === 'sus')}
+          ariaLabel="来源筛选"
           options={[
-            { value: 'all', label: `全部 ${peers.length}` },
-            { value: 'sus', label: `可疑 ${peers.filter((p) => p.threatScore >= 40).length}` },
+            { value: 'all', label: '全部', count: peers.length },
+            { value: 'sus', label: '可疑', count: suspicious.length },
           ]}
         />
         <span style={{ flex: 1 }} />
         <span className="ds-text-caption text-ds-description">
-          威胁分基于连接数、流量比例、目标端口和情报标记综合计算
+          威胁分综合连接数、流量比例、目标端口和情报标记
         </span>
       </div>
 
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+        <table className="ds-table" style={{ minWidth: 780 }}>
           <thead>
-            <tr className="ds-text-caption text-ds-description">
-              {['来源 IP', '归属', '流量占比', '上行', '下行', '连接', '威胁', ''].map((h, i) => (
-                <th
-                  key={h + i}
-                  style={{
-                    textAlign: i >= 3 && i <= 5 ? 'right' : 'left',
-                    fontWeight: 400,
-                    padding: '9px 12px',
-                    borderBottom: '1px solid var(--ds-border)',
-                    whiteSpace: 'nowrap',
-                    background: 'var(--ds-bg-sunken)',
-                  }}
-                >
-                  {h}
-                </th>
-              ))}
+            <tr>
+              <th style={{ paddingLeft: 22 }}>来源 IP</th>
+              <th>归属</th>
+              <th>流量占比</th>
+              <th style={{ textAlign: 'right' }}>上行</th>
+              <th style={{ textAlign: 'right' }}>下行</th>
+              <th style={{ textAlign: 'right' }}>连接</th>
+              <th>威胁</th>
+              <th style={{ paddingRight: 22 }} aria-label="操作" />
             </tr>
           </thead>
           <tbody>
             {shown.map((p) => {
               const isBlocked = blockedIps.has(p.ip) || p.blocked;
               const tc = threatColor(p.threatScore);
+              const flagged = p.threatScore >= 25;
               return (
-                <tr
-                  key={p.ip}
-                  className="ds-fade-in"
-                  style={{
-                    borderBottom: '1px solid var(--ds-border)',
-                    opacity: isBlocked ? 0.55 : 1,
-                  }}
-                >
-                  <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
+                <tr key={p.ip} className="ds-fade-in" style={{ opacity: isBlocked ? 0.5 : 1 }}>
+                  <td style={{ paddingLeft: 22, whiteSpace: 'nowrap' }}>
                     <span
-                      className="ds-text-body-sm tnum"
+                      className="ds-mono"
                       style={{
-                        fontWeight: 500,
+                        fontSize: 13,
                         color: 'var(--ds-text-primary)',
                         textDecoration: isBlocked ? 'line-through' : undefined,
                       }}
@@ -1325,99 +1298,84 @@ function PeerTable({
                       {p.ports.length > 0 ? `端口 ${p.ports.slice(0, 4).join(', ')}` : '—'}
                     </div>
                   </td>
-                  <td style={{ padding: '10px 12px', maxWidth: 190 }}>
+                  <td style={{ maxWidth: 210 }}>
                     <div
-                      className="ds-text-body-sm text-ds-secondary"
-                      style={{
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
+                      className="ds-ellipsis"
+                      style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--ds-text-secondary)' }}
                     >
-                      <CountryBadge code={p.countryCode} /> {p.org}
+                      <CountryBadge code={p.countryCode} />
+                      <span className="ds-ellipsis">{p.org}</span>
                     </div>
-                    <div className="ds-text-caption text-ds-description tnum">AS{p.asn}</div>
+                    <div className="ds-mono" style={{ fontSize: 12, color: 'var(--ds-text-description)' }}>
+                      AS{p.asn}
+                    </div>
                   </td>
-                  <td style={{ padding: '10px 12px', minWidth: 110 }}>
-                    <div
-                      style={{
-                        height: 5,
-                        borderRadius: 999,
-                        background: 'var(--ds-bg-sunken)',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <div
-                        style={{
-                          height: '100%',
-                          width: `${((p.rx + p.tx) / maxTotal) * 100}%`,
-                          background: tc,
-                          borderRadius: 999,
-                        }}
+                  <td style={{ minWidth: 120 }}>
+                    <span className="ds-meter-track" style={{ display: 'block', height: 3 }}>
+                      <span
+                        className="ds-meter-fill"
+                        style={{ width: `${Math.max(1.5, ((p.rx + p.tx) / maxTotal) * 100)}%`, background: tc }}
                       />
-                    </div>
-                    <div className="ds-text-caption text-ds-description tnum" style={{ marginTop: 3 }}>
+                    </span>
+                    <div className="ds-mono" style={{ fontSize: 12, color: 'var(--ds-text-description)', marginTop: 5 }}>
                       {bytes(p.rx + p.tx)}
                     </div>
                   </td>
-                  <td
-                    className="ds-text-body-sm tnum text-ds-secondary"
-                    style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}
-                  >
+                  <td className="ds-mono" style={{ textAlign: 'right', whiteSpace: 'nowrap', fontSize: 12.5 }}>
                     {bytes(p.tx)}
                   </td>
-                  <td
-                    className="ds-text-body-sm tnum text-ds-secondary"
-                    style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}
-                  >
+                  <td className="ds-mono" style={{ textAlign: 'right', whiteSpace: 'nowrap', fontSize: 12.5 }}>
                     {bytes(p.rx)}
                   </td>
                   <td
-                    className="ds-text-body-sm tnum"
+                    className="ds-mono"
                     style={{
-                      padding: '10px 12px',
                       textAlign: 'right',
-                      color:
-                        p.conns > 1500 ? 'var(--color-danger)' : 'var(--ds-text-secondary)',
-                      fontWeight: p.conns > 1500 ? 600 : 400,
+                      fontSize: 12.5,
+                      color: p.conns > 1500 ? 'var(--color-danger)' : undefined,
                     }}
                   >
                     {count(p.conns)}
                   </td>
-                  <td style={{ padding: '10px 12px' }}>
+                  <td>
                     {/* 判定依据可能有好几条，提示框的 white-space:pre-line 会保留换行 */}
                     <Tooltip content={p.threatReasons.join('\n') || '无异常信号'}>
-                      <span
-                        className="ds-chip"
-                        style={{
-                          color: tc,
-                          background: `color-mix(in srgb, ${tc} 10%, transparent)`,
-                          borderColor: `color-mix(in srgb, ${tc} 24%, transparent)`,
-                        }}
-                      >
-                        {threatLabel(p.threatScore)} {p.threatScore}
-                      </span>
+                      {flagged ? (
+                        <span
+                          className="ds-badge"
+                          style={{
+                            color: `color-mix(in srgb, ${tc} 78%, var(--ds-text-primary))`,
+                            borderColor: `color-mix(in srgb, ${tc} 30%, transparent)`,
+                            background: `color-mix(in srgb, ${tc} 7%, var(--ds-bg-surface))`,
+                          }}
+                        >
+                          {threatLabel(p.threatScore)} <span className="ds-mono">{p.threatScore}</span>
+                        </span>
+                      ) : (
+                        // 正常的来源只写一行灰字，不挂徽标 —— 满屏的"正常"徽标会把可疑的那几行淹掉
+                        <span className="ds-text-caption text-ds-description">
+                          正常 <span className="ds-mono">{p.threatScore}</span>
+                        </span>
+                      )}
                     </Tooltip>
                   </td>
-                  <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                  <td style={{ paddingRight: 22, textAlign: 'right' }}>
                     {isBlocked ? (
-                      <span className="ds-chip" style={{ color: 'var(--color-danger)' }}>
+                      <Badge tone="danger">
                         <IconBan size={11} />
                         已封禁
-                      </span>
+                      </Badge>
                     ) : canBlock ? (
                       <button
                         className="ds-btn ds-btn-ghost ds-btn-s"
                         onClick={() => onBlock(p)}
                         style={{ color: p.threatScore >= 50 ? 'var(--color-danger)' : undefined }}
                       >
-                        <IconBan size={11} />
+                        <IconBan size={12} />
                         封禁
                       </button>
                     ) : (
-                      <span className="ds-text-caption text-ds-disabled" style={{ color: 'var(--ds-text-disabled)' }}>
-                        —
-                      </span>
+                      <span style={{ color: 'var(--ds-text-disabled)' }}>—</span>
                     )}
                   </td>
                 </tr>
@@ -1432,22 +1390,17 @@ function PeerTable({
         <EmptyState title="没有可疑来源" hint="当前所有对端的威胁评分都在 40 以下。" />
       )}
 
-      <Pagination
-        page={page}
-        pageSize={PEER_PAGE_SIZE}
-        total={filtered.length}
-        onPage={setPage}
-      />
+      <Pagination page={page} pageSize={PEER_PAGE_SIZE} total={filtered.length} onPage={setPage} />
     </>
   );
 }
 
-const RULE_STATE: Record<string, { text: string; color: string }> = {
-  active: { text: '生效中', color: 'var(--color-danger)' },
-  pending: { text: '待下发', color: 'var(--color-warn)' },
-  expired: { text: '已过期', color: 'var(--ds-text-description)' },
-  removed: { text: '已解除', color: 'var(--ds-text-description)' },
-  failed: { text: '执行失败', color: 'var(--color-danger)' },
+const RULE_STATE: Record<string, { text: string; tone: 'danger' | 'warn' | 'idle' }> = {
+  active: { text: '生效中', tone: 'danger' },
+  pending: { text: '待下发', tone: 'warn' },
+  expired: { text: '已过期', tone: 'idle' },
+  removed: { text: '已解除', tone: 'idle' },
+  failed: { text: '执行失败', tone: 'danger' },
 };
 
 function RuleList({
@@ -1465,7 +1418,7 @@ function RuleList({
   if (rules.length === 0) {
     return (
       <EmptyState
-        icon={<IconShield size={28} />}
+        icon={<IconShield size={22} />}
         title="还没有封禁记录"
         hint="在上面的对端 IP 列表里选中可疑来源就能创建规则。默认只生成不下发。"
       />
@@ -1489,46 +1442,32 @@ function RuleList({
         const open = expanded === r.id;
         const live = r.state === 'active' || r.state === 'pending';
         return (
-          <div key={r.id} style={{ borderBottom: '1px solid var(--ds-border)' }}>
+          <div key={r.id} style={{ borderBottom: '1px solid var(--ds-divider)' }}>
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 10,
-                padding: '11px 18px',
+                padding: '12px 22px',
                 flexWrap: 'wrap',
               }}
             >
-              <span
-                className="ds-text-body-sm tnum"
-                style={{ fontWeight: 600, color: 'var(--ds-text-primary)', minWidth: 118 }}
-              >
+              <span className="ds-mono" style={{ fontSize: 13, color: 'var(--ds-text-primary)', minWidth: 128 }}>
                 {r.target}
               </span>
-              <span
-                className="ds-chip"
-                style={{
-                  color: st.color,
-                  background: `color-mix(in srgb, ${st.color} 10%, transparent)`,
-                  borderColor: `color-mix(in srgb, ${st.color} 22%, transparent)`,
-                }}
-              >
+              <Badge tone={st.tone} dot>
                 {st.text}
-              </span>
-              <Chip>{r.mode === 'enforced' ? 'enforce' : 'dry-run'}</Chip>
+              </Badge>
+              <Chip>
+                <span className="ds-mono">{r.mode === 'enforced' ? 'enforce' : 'dry-run'}</span>
+              </Chip>
               <span
-                className="ds-text-caption text-ds-description"
-                style={{
-                  flex: 1,
-                  minWidth: 120,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
+                className="ds-text-caption text-ds-description ds-ellipsis"
+                style={{ flex: 1, minWidth: 120 }}
               >
                 {r.reason || '未填写原因'}
               </span>
-              <span className="ds-text-caption text-ds-description tnum" style={{ whiteSpace: 'nowrap' }}>
+              <span className="ds-text-caption text-ds-description" style={{ whiteSpace: 'nowrap' }}>
                 {ago(r.createdAt)}
                 {r.expiresAt > 0 && ` · ${untilExpireShort(r.expiresAt)}`}
               </span>
@@ -1537,7 +1476,7 @@ function RuleList({
                 onClick={() => setExpanded(open ? null : r.id)}
                 aria-expanded={open}
               >
-                <IconTerminal size={11} />
+                <IconTerminal size={12} />
                 命令
               </button>
               {live && canRemove && (
@@ -1546,31 +1485,18 @@ function RuleList({
                   disabled={busy === r.id}
                   onClick={() => void remove(r.id)}
                 >
-                  <IconTrash size={11} />
+                  <IconTrash size={12} />
                   {busy === r.id ? '解除中…' : '解除'}
                 </button>
               )}
             </div>
             {open && (
-              <div className="ds-fade-in" style={{ padding: '0 18px 13px' }}>
-                <pre
-                  style={{
-                    margin: 0,
-                    padding: '10px 12px',
-                    background: 'var(--ds-bg-sunken)',
-                    border: '1px solid var(--ds-border)',
-                    borderRadius: 8,
-                    overflowX: 'auto',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11.5,
-                    lineHeight: 1.75,
-                    color: 'var(--ds-text-secondary)',
-                  }}
-                >
+              <div className="ds-fade-in" style={{ padding: '0 22px 14px' }}>
+                <pre className="ds-enroll-cmd" style={{ userSelect: 'text', WebkitUserSelect: 'text' }}>
                   {r.commands.join('\n')}
                 </pre>
                 {r.result && (
-                  <p className="ds-text-caption text-ds-description" style={{ margin: '7px 0 0' }}>
+                  <p className="ds-text-caption text-ds-description" style={{ margin: '8px 0 0' }}>
                     {r.result}
                   </p>
                 )}

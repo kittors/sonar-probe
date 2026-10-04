@@ -295,6 +295,108 @@ export const IconPlug = (p: IconProps) => (
   </Svg>
 );
 
+/** 概览页：四块面板拼成的看板 */
+export const IconDashboard = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="8" height="10" rx="1.5" />
+    <rect x="13" y="3" width="8" height="6" rx="1.5" />
+    <rect x="13" y="11" width="8" height="10" rx="1.5" />
+    <rect x="3" y="15" width="8" height="6" rx="1.5" />
+  </Svg>
+);
+
+export const IconUser = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4.5 20.5c1.3-3.6 4.2-5.5 7.5-5.5s6.2 1.9 7.5 5.5" />
+  </Svg>
+);
+
+export const IconUsers = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="9" cy="8" r="3.6" />
+    <path d="M2.5 20c1-3.3 3.6-5 6.5-5s5.5 1.7 6.5 5" />
+    <path d="M16 4.6a3.6 3.6 0 0 1 0 6.8M18.2 15.3c1.6.7 2.7 2.3 3.3 4.7" />
+  </Svg>
+);
+
+export const IconKey = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="7.5" cy="15.5" r="4.5" />
+    <path d="m10.7 12.3 9.8-9.8M17 6l3 3M14.5 8.5l2 2" />
+  </Svg>
+);
+
+export const IconSettings = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" />
+    <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+  </Svg>
+);
+
+export const IconLogout = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="m16 17 5-5-5-5M21 12H9" />
+  </Svg>
+);
+
+export const IconArrowRight = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M5 12h14m0 0-5.5-5.5M19 12l-5.5 5.5" />
+  </Svg>
+);
+
+/** 回车键，命令面板里提示"按回车打开" */
+export const IconEnter = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M20 5v7a3 3 0 0 1-3 3H5m0 0 4-4m-4 4 4 4" />
+  </Svg>
+);
+
+export const IconFileText = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
+    <path d="M14 3v5h5M9 13h6M9 17h4" />
+  </Svg>
+);
+
+export const IconGauge = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4.2 17.5a9 9 0 1 1 15.6 0" />
+    <path d="m12 13 3.5-3.5" />
+    <circle cx="12" cy="13" r="1.2" />
+  </Svg>
+);
+
+export const IconEye = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+    <circle cx="12" cy="12" r="3" />
+  </Svg>
+);
+
+export const IconEyeOff = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M10.6 6.1A9.9 9.9 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-2.3 3.1M6.6 7.6C4 9.4 2.5 12 2.5 12S6 18 12 18c1.6 0 3-.4 4.3-1" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18" />
+  </Svg>
+);
+
+export const IconBadgeCheck = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 3 5 6v6c0 4.4 2.9 8.2 7 9 4.1-.8 7-4.6 7-9V6l-7-3Z" />
+    <path d="m9 12 2.2 2.2L15.5 10" />
+  </Svg>
+);
+
+export const IconScan = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2" />
+    <path d="M7 12h10" />
+  </Svg>
+);
+
 /** Sonar 的标志：声纳波形，呼应"深海探测"。 */
 export const Logo = ({ size = 28 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">

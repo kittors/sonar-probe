@@ -6,6 +6,7 @@ import { CURRENCIES as ALL_CURRENCIES, CURRENCY_META } from '../lib/currency';
 import { useSettings } from '../lib/settings';
 import { Modal } from './Modal';
 import { Alert, Checkbox, DatePicker, Field, FieldRow, Segmented, Select } from './ui';
+import { TextInput } from './Input';
 
 /**
  * 机器属性编辑
@@ -83,14 +84,22 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
   );
   // 配额拆成"是否不限量"和"具体数值"两截，比让人填 0 表示无限直观得多
   const [unlimited, setUnlimited] = useState(node.trafficQuota <= 0);
-  const [quotaValue, setQuotaValue] = useState(
-    node.trafficQuota > 0
-      ? String(node.trafficQuota >= TB ? node.trafficQuota / TB : node.trafficQuota / GB)
-      : '',
-  );
-  const [quotaUnit, setQuotaUnit] = useState<'GB' | 'TB'>(
-    node.trafficQuota > 0 && node.trafficQuota < TB ? 'GB' : 'TB',
-  );
+  /*
+   * 配额的初始显示值。
+   *
+   * 库里的字节数未必是当前进制下的整数 —— 按 1024 存的 6 TiB 换成 1000 进制是
+   * 6.597069766656 TB，原样塞进输入框就是一长串小数，旁边的换算却写着"≈ 7 TB"，
+   * 两处对不上。显示时保留三位小数；但只要人没改过这一栏，保存时写回原来的字节数，
+   * 不能因为打开弹窗点了一下保存，配额就被四舍五入悄悄改掉。
+   */
+  const [initialQuota] = useState(() => {
+    if (node.trafficQuota <= 0) return { text: '', unit: 'TB' as 'GB' | 'TB' };
+    const unit: 'GB' | 'TB' = node.trafficQuota < TB ? 'GB' : 'TB';
+    const v = node.trafficQuota / (unit === 'TB' ? TB : GB);
+    return { text: String(Number(v.toFixed(3))), unit };
+  });
+  const [quotaValue, setQuotaValue] = useState(initialQuota.text);
+  const [quotaUnit, setQuotaUnit] = useState<'GB' | 'TB'>(initialQuota.unit);
   const [panelUrl, setPanelUrl] = useState(node.panelUrl);
   const [tags, setTags] = useState(node.tags.join(', '));
 
@@ -114,9 +123,13 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
   const [showErrors, setShowErrors] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const quotaUntouched =
+    node.trafficQuota > 0 && quotaValue === initialQuota.text && quotaUnit === initialQuota.unit;
   const quotaBytes = unlimited
     ? 0
-    : Math.round((Number(quotaValue) || 0) * (quotaUnit === 'TB' ? TB : GB));
+    : quotaUntouched
+      ? node.trafficQuota
+      : Math.round((Number(quotaValue) || 0) * (quotaUnit === 'TB' ? TB : GB));
 
   const usedTouched = usedValue.trim() !== '';
   const usedBytes = usedTouched
@@ -234,11 +247,10 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <FieldRow>
           <Field label="名称" grow>
-            <input className="ds-input" value={name} onChange={(e) => setName(e.target.value)} />
+            <TextInput value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
           <Field label="服务商" grow>
-            <input
-              className="ds-input"
+            <TextInput
               placeholder="如 Vultr"
               value={provider}
               onChange={(e) => setProvider(e.target.value)}
@@ -248,8 +260,7 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
 
         <FieldRow>
           <Field label="国家代码" width={92} error={show('countryCode')}>
-            <input
-              className="ds-input"
+            <TextInput
               placeholder="HK"
               maxLength={2}
               value={countryCode}
@@ -257,8 +268,7 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
             />
           </Field>
           <Field label="地区" grow>
-            <input
-              className="ds-input"
+            <TextInput
               placeholder="Hong Kong"
               value={region}
               onChange={(e) => setRegion(e.target.value)}
@@ -270,8 +280,8 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
 
         <FieldRow>
           <Field label="价格" width={104} error={show('price')}>
-            <input
-              className="ds-input tnum"
+            <TextInput
+              className="tnum"
               placeholder="0.00"
               inputMode="decimal"
               value={price}
@@ -310,8 +320,8 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
 
             {!unlimited && (
               <>
-                <input
-                  className="ds-input tnum"
+                <TextInput
+                  className="tnum"
                   style={{ width: 104 }}
                   placeholder="0"
                   inputMode="decimal"
@@ -377,8 +387,8 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
           }
         >
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input
-              className="ds-input tnum"
+            <TextInput
+              className="tnum"
               style={{ width: 104 }}
               placeholder="实际已用"
               inputMode="decimal"
@@ -420,8 +430,7 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
           hint="服务商后台里这台机器的地址，排查时可一键跳过去"
           error={show('panelUrl')}
         >
-          <input
-            className="ds-input"
+          <TextInput
             placeholder="https://..."
             inputMode="url"
             value={panelUrl}
@@ -430,8 +439,7 @@ export function NodeEditDialog({ node, onClose, onSaved }: Props) {
         </Field>
 
         <Field label="标签" hint="逗号分隔" error={show('tags')}>
-          <input
-            className="ds-input"
+          <TextInput
             placeholder="如：生产, 主库"
             value={tags}
             onChange={(e) => setTags(e.target.value)}

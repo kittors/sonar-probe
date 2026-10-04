@@ -118,7 +118,7 @@ export function TimeChart({
           <defs>
             {series.map((s) => (
               <linearGradient key={s.key} id={`tc-${gid}-${s.key}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={s.color} stopOpacity="0.2" />
+                <stop offset="0%" stopColor={s.color} stopOpacity="0.08" />
                 <stop offset="100%" stopColor={s.color} stopOpacity="0" />
               </linearGradient>
             ))}
@@ -143,7 +143,7 @@ export function TimeChart({
                   y={y + 3.5}
                   textAnchor="end"
                   className="tnum"
-                  style={{ fontSize: 10.5, fill: 'var(--ds-text-description)' }}
+                  style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', fill: 'var(--ds-text-description)' }}
                 >
                   {yFormat(t)}
                 </text>
@@ -159,7 +159,7 @@ export function TimeChart({
               y={height - 7}
               textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}
               className="tnum"
-              style={{ fontSize: 10.5, fill: 'var(--ds-text-description)' }}
+              style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', fill: 'var(--ds-text-description)' }}
             >
               {clockTime(timestamps[i]!)}
             </text>
@@ -176,7 +176,7 @@ export function TimeChart({
               d={line}
               fill="none"
               stroke={s.color}
-              strokeWidth="1.75"
+              strokeWidth="1.5"
               strokeLinecap="round"
               strokeLinejoin="round"
             />

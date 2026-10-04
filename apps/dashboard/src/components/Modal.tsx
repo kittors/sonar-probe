@@ -65,32 +65,18 @@ export function Modal({
     <div
       role="dialog"
       aria-modal="true"
+      className="ds-modal-backdrop"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 100,
-        display: 'flex',
-        overflowY: 'auto',
-        padding: 16,
-        background: 'rgba(8, 9, 11, 0.5)',
-        backdropFilter: 'blur(4px)',
-        WebkitBackdropFilter: 'blur(4px)',
-        animation: 'ds-fade-in 0.18s ease',
-      }}
     >
-      <div
-        className="ds-modal ds-animate-in"
-        style={{ width: `min(${width}px, 100%)`, margin: 'auto' }}
-      >
+      <div className="ds-modal ds-modal-enter" style={{ width: `min(${width}px, 100%)`, margin: 'auto' }}>
         <header className="ds-modal-head">
           {icon && <span className="ds-modal-icon">{icon}</span>}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <h2 className="ds-text-subtitle text-ds-primary" style={{ margin: 0 }}>
+            <h2 className="text-ds-primary" style={{ margin: 0, fontSize: 18, fontWeight: 500, letterSpacing: '-0.015em', lineHeight: 1.35 }}>
               {title}
             </h2>
             {subtitle && (
-              <p className="ds-text-caption text-ds-description" style={{ margin: '2px 0 0' }}>
+              <p className="ds-text-body-sm text-ds-description" style={{ margin: '3px 0 0' }}>
                 {subtitle}
               </p>
             )}

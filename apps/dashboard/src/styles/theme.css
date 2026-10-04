@@ -3,13 +3,21 @@
 /*
  * Sonar 设计系统
  *
- * 沿用 DeepSeek 官网的那套语言：近白冷调底、毛玻璃卡片、极细边框、克制阴影、
- * 大量留白，主色只在关键处出现。间距沿用它的 ds-1..ds-9 刻度，
- * 排版分 slogan / title / body / caption 四级。
+ * 视觉语言取自 cloudflare.com 现在的那一套，只取克制的部分：
+ *
+ * - **暖白、发丝线。** 页面是 #fdfdfc 的暖白，内容收在一条居中的"纸面"里，左右各一道
+ *   发丝线；区块之间也只靠一道线分隔，不靠底色、不靠投影。两侧留白里是很淡的点阵，
+ *   大屏上不至于空，又不抢内容。
+ * - **炭黑是数据色，橙色是提醒色。** 进度条、趋势线平时都是炭黑；橙色只出现在需要
+ *   人注意的地方（越线的读数、告警、主按钮）。一屏里橙色越少，它出现时越醒目。
+ * - **字体给数字。** 西文和数字用 Geist，读数用 Geist Mono；中文交给系统的苹方。
+ *   标题用 500 字重、收紧字距，大而不重。
+ * - **结构方角，控件圆润。** 区块、表格是方的；按钮、筛选、徽标是胶囊；浮层圆角 12px。
+ *
+ * 不用渐变、光晕、毛玻璃 —— 它们在信息面板上只会让读数和背景糊在一起。
  */
 
 @theme {
-  /* —— 间距刻度：和 DeepSeek 的 gap-ds-N 对齐 —— */
   --spacing-ds-1: 4px;
   --spacing-ds-2: 8px;
   --spacing-ds-3: 12px;
@@ -21,142 +29,164 @@
   --spacing-ds-9: 48px;
 
   --radius-ds-sm: 8px;
-  --radius-ds-md: 12px;
-  --radius-ds-lg: 16px;
-  --radius-ds-xl: 20px;
+  --radius-ds-md: 10px;
+  --radius-ds-lg: 12px;
+  --radius-ds-xl: 14px;
 
   --font-sans:
-    'PingFang SC', 'HarmonyOS Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Microsoft YaHei', system-ui, sans-serif;
+    'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
   --font-mono:
-    'SF Mono', 'JetBrains Mono', 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    'Geist Mono Variable', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* 品牌色 —— DeepSeek 那支蓝 */
-  --color-brand: #4d6bfe;
-  --color-brand-hover: #3d5bee;
-  --color-brand-soft: rgba(77, 107, 254, 0.1);
-  --color-brand-ring: rgba(77, 107, 254, 0.24);
+  /* 强调色：Cloudflare 的那支橙。主按钮、焦点、需要注意的读数 */
+  --color-brand: #ff5e1f;
+  --color-brand-hover: #f04f10;
+  --color-brand-soft: rgba(255, 94, 31, 0.08);
+  --color-brand-ring: rgba(255, 94, 31, 0.22);
 
-  /* 状态色 */
-  --color-ok: #00b96b;
-  --color-warn: #f5a623;
-  --color-danger: #f04438;
-  --color-idle: #9aa1b1;
+  --color-ok: #16a34a;
+  /* 提醒和强调是同一个颜色：橙色在这套界面里的意思就是"看这里" */
+  --color-warn: #f2601a;
+  --color-danger: #e5484d;
+  --color-idle: #a3a3a3;
 }
 
 /* ————————————————————————————————————————————————————————
-   主题变量：亮色 / 暗色
+   主题变量
    ———————————————————————————————————————————————————————— */
 
 :root {
-  --ds-bg-page: #f6f7fa;
+  --ds-bg-page: #fdfdfc;
+  --ds-dots: #e8e6e3;
+  --ds-bg-chrome: #ffffff;
   --ds-bg-surface: #ffffff;
-  --ds-bg-sunken: #f0f2f7;
-  --ds-bg-hover: rgba(16, 20, 32, 0.035);
+  /* 暖灰：表头、标签、弹窗脚、悬停的格子 */
+  --ds-bg-subtle: #f9f8f6;
+  --ds-bg-sunken: #f6f5f3;
+  --ds-bg-track: #efeeeb;
+  --ds-bg-fill: #f3f2f0;
+  --ds-bg-hover: rgba(40, 30, 20, 0.035);
+  --ds-bg-active: rgba(40, 30, 20, 0.065);
 
-  --ds-text-primary: #14171f;
-  --ds-text-secondary: #4e5666;
-  --ds-text-description: #878e9e;
-  --ds-text-disabled: #b4b9c6;
+  --ds-text-primary: #262626;
+  --ds-text-secondary: #525252;
+  --ds-text-description: #737373;
+  --ds-text-disabled: #a3a3a3;
 
-  --ds-border: rgba(16, 20, 32, 0.08);
-  --ds-border-strong: rgba(16, 20, 32, 0.14);
+  /* 数据色：进度条、趋势线的常态颜色 */
+  --ds-data: #262626;
 
-  --ds-glass-bg: rgba(255, 255, 255, 0.72);
-  --ds-glass-border: rgba(255, 255, 255, 0.7);
-  --ds-shadow-card: 0 1px 2px rgba(16, 20, 32, 0.04), 0 8px 24px -12px rgba(16, 20, 32, 0.12);
-  --ds-shadow-hover: 0 2px 4px rgba(16, 20, 32, 0.05), 0 18px 40px -16px rgba(16, 20, 32, 0.18);
-  --ds-shadow-pop: 0 12px 48px -12px rgba(16, 20, 32, 0.24);
+  --ds-border: #ebe9e6;
+  --ds-border-strong: #d6d4d0;
+  --ds-border-control: #e2e0dc;
+  --ds-divider: #efeeeb;
 
-  /* 页面顶部那层极淡的品牌光晕 */
-  --ds-aurora-1: rgba(77, 107, 254, 0.1);
-  --ds-aurora-2: rgba(120, 190, 255, 0.08);
+  --ds-glass-bg: #ffffff;
+  --ds-glass-border: #ebe9e6;
 
-  --ds-grid-line: rgba(16, 20, 32, 0.06);
+  --ds-shadow-card: none;
+  --ds-shadow-hover: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --ds-shadow-pop:
+    0 0 0 1px rgba(0, 0, 0, 0.04), 0 16px 40px -12px rgba(30, 20, 10, 0.18),
+    0 4px 10px -4px rgba(30, 20, 10, 0.06);
 
-  /* 提示框用反色：浅色主题下是深底白字 */
-  --ds-tooltip-bg: #23262e;
-  --ds-tooltip-fg: #f2f4f8;
+  --ds-nav-active-bg: var(--ds-bg-fill);
+  --ds-nav-active-fg: var(--ds-text-primary);
+  --ds-spotlight: transparent;
+  --ds-aurora-1: transparent;
+  --ds-aurora-2: transparent;
 
-  /* 图表色板（浅色） */
-  --chart-cpu: #4d6bfe;
-  --chart-mem: #8b5cf6;
-  --chart-disk: #06b6d4;
-  --chart-load: #f5a623;
-  --chart-rx: #00b96b;
-  --chart-tx: #4d6bfe;
-  --chart-neutral: #94a3b8;
-  --chart-muted: #a1a1aa;
-  --chart-caution: #eab308;
+  --ds-grid-line: #f0efec;
+
+  --ds-tooltip-bg: #262626;
+  --ds-tooltip-fg: #fafafa;
+
+  /*
+   * 图表色。两条线的图用"炭黑 + 橙"，像报纸上的图表那样一深一亮，
+   * 不必再引入第三种色相；分类图（服务归因）才需要更多颜色，用一组低饱和的暖色。
+   */
+  --chart-cpu: #262626;
+  --chart-mem: #262626;
+  --chart-disk: #262626;
+  --chart-load: #ff6a2b;
+  --chart-rx: #ff6a2b;
+  --chart-tx: #262626;
+  --chart-neutral: #a8a29e;
+  --chart-muted: #d6d3d1;
+  --chart-caution: #f59e0b;
+  /* 分类色里刻意不放橙：橙色在这套界面里表示"需要注意"，分类图里出现会被误读成告警 */
+  --chart-c1: #262626;
+  --chart-c2: #4a6fa5;
+  --chart-c3: #8a837d;
+  --chart-c4: #c8a97e;
+  --chart-c5: #9b6b8f;
+  --chart-c6: #2f7d6d;
+  --chart-c7: #d6d3d1;
 
   color-scheme: light;
 }
 
-/*
- * 暗色
- *
- * 两条原则，都是从 DeepSeek 那套暗色里学来的：
- *
- * 1. **中性灰，不掺蓝。** 深色背景一旦带蓝调（#0a0c11 那种），整体会显得发闷、廉价。
- *    它用的是 #101113 / #1f2126 / #81858c 这类近乎无色相的灰。
- *
- * 2. **层次要拉开。** 页面底和卡片面必须有肉眼可辨的亮度差，卡片才"浮"得起来。
- *    之前 #0a0c11 → #12151c 差得太少，整屏糊成一片。现在是 #101113 → #1f2126。
- *
- * 另外品牌色和状态色都得提亮：同一个蓝在白底上沉稳，扔到深色里就发死。
- */
 html[data-theme='dark'] {
-  --ds-bg-page: #101113;
-  --ds-bg-surface: #1f2126;
-  --ds-bg-sunken: #17181c;
-  --ds-bg-hover: rgba(255, 255, 255, 0.055);
+  --ds-bg-page: #0b0b0b;
+  --ds-dots: #1d1d1d;
+  --ds-bg-chrome: #0f0f0f;
+  --ds-bg-surface: #111111;
+  --ds-bg-subtle: #161616;
+  --ds-bg-sunken: #0d0d0d;
+  --ds-bg-track: #262626;
+  --ds-bg-fill: #1c1c1c;
+  --ds-bg-hover: rgba(255, 255, 255, 0.04);
+  --ds-bg-active: rgba(255, 255, 255, 0.07);
 
-  --ds-text-primary: #e6e8ea;
-  --ds-text-secondary: #b2b6bc;
-  --ds-text-description: #81858c;
-  --ds-text-disabled: #5b5f66;
+  --ds-text-primary: #ededed;
+  --ds-text-secondary: #b3b3b3;
+  --ds-text-description: #8a8a8a;
+  --ds-text-disabled: #5c5c5c;
 
-  --ds-border: rgba(255, 255, 255, 0.07);
-  --ds-border-strong: rgba(255, 255, 255, 0.14);
+  --ds-data: #e8e8e8;
 
-  --ds-glass-bg: rgba(31, 33, 38, 0.72);
-  --ds-glass-border: rgba(255, 255, 255, 0.08);
+  --ds-border: #232323;
+  --ds-border-strong: #383838;
+  --ds-border-control: #2c2c2c;
+  --ds-divider: #1d1d1d;
 
-  /* 暗色下阴影几乎看不见，分层主要靠背景差和边框，所以阴影只做很轻的托底 */
-  --ds-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -14px rgba(0, 0, 0, 0.7);
-  --ds-shadow-hover: 0 2px 6px rgba(0, 0, 0, 0.45), 0 20px 44px -18px rgba(0, 0, 0, 0.8);
-  --ds-shadow-pop: 0 16px 48px -12px rgba(0, 0, 0, 0.85);
+  --ds-glass-bg: #111111;
+  --ds-glass-border: #232323;
 
-  --ds-aurora-1: rgba(103, 158, 254, 0.1);
-  --ds-aurora-2: rgba(120, 140, 255, 0.06);
+  --ds-shadow-hover: none;
+  --ds-shadow-pop: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 18px 44px -10px rgba(0, 0, 0, 0.8);
 
-  --ds-grid-line: rgba(255, 255, 255, 0.055);
+  --ds-grid-line: #1f1f1f;
 
-  /* 暗色下不能再用更深的底，那样会糊进背景；改用比卡片更亮的一层 */
-  --ds-tooltip-bg: #34383f;
-  --ds-tooltip-fg: #f0f1f3;
+  --ds-tooltip-bg: #ededed;
+  --ds-tooltip-fg: #171717;
 
-  /* 提亮后的品牌色与状态色 */
-  --color-brand: #679efe;
-  --color-brand-hover: #7fadff;
-  --color-brand-soft: rgba(103, 158, 254, 0.13);
-  --color-brand-ring: rgba(103, 158, 254, 0.3);
+  --color-brand: #ff6a2c;
+  --color-brand-hover: #ff8048;
+  --color-brand-soft: rgba(255, 106, 44, 0.12);
+  --color-brand-ring: rgba(255, 106, 44, 0.3);
 
-  --color-ok: #3ddc97;
-  --color-warn: #f7b955;
-  --color-danger: #ff6b60;
-  --color-idle: #6f747c;
+  --color-ok: #22c55e;
+  --color-warn: #ff6a2c;
+  --color-danger: #ff6b6b;
+  --color-idle: #6b6b6b;
 
-  /* 图表色板（暗色）—— 整体提亮并稍降饱和，深色底上才不刺眼也不发闷 */
-  --chart-cpu: #679efe;
-  --chart-mem: #a78bfa;
-  --chart-disk: #3ecfe0;
-  --chart-load: #f7b955;
-  --chart-rx: #3ddc97;
-  --chart-tx: #679efe;
-  --chart-neutral: #8b919b;
-  --chart-muted: #6f747c;
-  --chart-caution: #f2ce4f;
+  --chart-cpu: #e8e8e8;
+  --chart-mem: #e8e8e8;
+  --chart-disk: #e8e8e8;
+  --chart-load: #ff7a3d;
+  --chart-rx: #ff7a3d;
+  --chart-tx: #e8e8e8;
+  --chart-neutral: #8a8580;
+  --chart-muted: #3a3a3a;
+  --chart-c1: #e8e8e8;
+  --chart-c2: #7c9fd6;
+  --chart-c3: #a8a29e;
+  --chart-c4: #c8a97e;
+  --chart-c5: #c497b8;
+  --chart-c6: #4fb3a0;
+  --chart-c7: #3a3a3a;
 
   color-scheme: dark;
 }
@@ -165,213 +195,492 @@ html[data-theme='dark'] {
    基础
    ———————————————————————————————————————————————————————— */
 
-* {
-  border-color: var(--ds-border);
+/*
+ * 基础规则全部放进 base 层。
+ *
+ * 不放进层里的样式，按 CSS 层叠规则会压过所有层内的样式，不论选择器优先级多高 ——
+ * 之前那条 `* { border-color }` 就是这样把组件里的彩色边框全盖成了默认细线：
+ * 告警徽标的橙色描边、输入框聚焦时的深色边框、主按钮的橙色边框都没生效。
+ * 焦点描边同理：不在层里时会把胶囊按钮聚焦时的圆角也强行改成 6px。
+ */
+@layer base {
+  * {
+    border-color: var(--ds-border);
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    /* 点阵：12px 一格。只有两侧留白里看得见，中间被纸面盖住 */
+    background-color: var(--ds-bg-page);
+    background-image: radial-gradient(var(--ds-dots) 0.8px, transparent 0.9px);
+    background-size: 12px 12px;
+    color: var(--ds-text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-synthesis-weight: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--color-brand-soft);
+    color: var(--color-brand);
+  }
+
+  :where(a, button, [role='button'], [role='tab'], summary):focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  /* 细滚动条。同样得在层里：标签栏那种横向滚动区要用 scrollbar-width:none 把它藏掉 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ds-border-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--ds-border-strong);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
-html,
-body,
-#root {
-  height: 100%;
-}
-
-body {
-  margin: 0;
-  background: var(--ds-bg-page);
-  color: var(--ds-text-primary);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-synthesis-weight: none;
-  text-rendering: optimizeLegibility;
-}
-
-::selection {
-  background: var(--color-brand-soft);
-  color: var(--color-brand);
-}
-
-/* 数字必须等宽，否则实时跳动时整行会左右抖 —— 探针面板里这一点特别明显 */
+/* 数字必须等宽，否则实时跳动时整行会左右抖 */
 .tnum {
   font-variant-numeric: tabular-nums;
   font-feature-settings: 'tnum' 1;
 }
 
-/* 细滚动条，跟整体的克制感一致 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--ds-border-strong) transparent;
-}
-*::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-*::-webkit-scrollbar-thumb {
-  background: var(--ds-border-strong);
-  border-radius: 999px;
-}
-*::-webkit-scrollbar-track {
-  background: transparent;
+.ds-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 
+
 /* ————————————————————————————————————————————————————————
-   组件类
+   外壳：顶栏 + 纸面
    ———————————————————————————————————————————————————————— */
 
 @layer components {
-  .ds-container {
-    width: 100%;
-    max-width: 1440px;
+  .ds-app {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .ds-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 60;
+    background: var(--ds-bg-chrome);
+    border-bottom: 1px solid var(--ds-border);
+  }
+  /* 顶栏内容和纸面同宽、同内边距，Logo 和下面的大标题左缘对齐 */
+  .ds-topbar-inner {
+    height: 64px;
+    max-width: 1240px;
     margin-inline: auto;
-    padding-inline: clamp(16px, 4vw, 40px);
+    padding-inline: clamp(16px, 3.4vw, 40px);
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
-  /* 毛玻璃卡片 —— DeepSeek 的 ds-glass-card */
-  .ds-glass-card {
-    position: relative;
-    background: var(--ds-glass-bg);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
+  .ds-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    color: inherit;
+    text-decoration: none;
+  }
+  .ds-brand-name {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    color: var(--ds-text-primary);
+    white-space: nowrap;
+  }
+  .ds-brand-tagline {
+    font-size: 11.5px;
+    line-height: 1.3;
+    color: var(--ds-text-description);
+    white-space: nowrap;
+  }
+
+  /* 顶栏的图标按钮常驻一圈细边，和身份胶囊成一组；其他地方的图标按钮平时没有边 */
+  .ds-topbar .ds-btn-icon {
+    border-color: var(--ds-border);
+    background: var(--ds-bg-surface);
+  }
+  .ds-topbar .ds-btn-icon:hover {
+    border-color: var(--ds-border-strong);
+    background: var(--ds-bg-subtle);
+  }
+
+  /* 顶栏右侧的身份按钮：胶囊，头像 + 名字 */
+  .ds-user-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 12px 0 5px;
     border: 1px solid var(--ds-border);
-    border-radius: var(--radius-ds-lg);
-    box-shadow: var(--ds-shadow-card);
+    border-radius: 999px;
+    background: var(--ds-bg-surface);
+    color: var(--ds-text-primary);
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      border-color 0.15s ease,
+      background-color 0.15s ease;
+  }
+  .ds-user-btn:hover {
+    border-color: var(--ds-border-strong);
+  }
+  .ds-user-btn[aria-expanded='true'] {
+    background: var(--ds-bg-subtle);
+  }
+  .ds-user-name {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ds-user-chevron {
+    color: var(--ds-text-description);
+    transition: transform 0.2s ease;
+  }
+  .ds-user-btn[aria-expanded='true'] .ds-user-chevron {
+    transform: rotate(180deg);
+  }
+  @media (max-width: 560px) {
+    .ds-user-name,
+    .ds-user-chevron,
+    .ds-brand-tagline {
+      display: none;
+    }
+    .ds-user-btn {
+      padding: 0 4px;
+    }
   }
 
   /*
-   * 卡片的高光描边。
-   *
-   * 暗色下单纯一条 rgba(255,255,255,.07) 的边显得很死。真实的物体边缘会因为
-   * 环境光有方向性的明暗差，所以这里用 135° 渐变：左上最亮，绕到右下渐弱再微微回亮。
-   * 用 mask 镂空中间，只留 1px 边框那一圈。
+   * 纸面：居中的一整条，左右两道发丝线，从顶栏一直落到页底。
+   * 两侧的点阵就是靠它"挖"出来的 —— 纸面是实心的，点阵只在外面。
    */
-  html[data-theme='dark'] .ds-glass-card::before,
-  html[data-theme='dark'] .ds-surface::before {
-    content: '';
+  .ds-frame {
+    position: relative;
+    flex: 1;
+    width: 100%;
+    max-width: 1240px;
+    margin-inline: auto;
+    background: var(--ds-bg-surface);
+    border-inline: 1px solid var(--ds-border);
+  }
+  @media (max-width: 1240px) {
+    .ds-frame {
+      border-inline: none;
+    }
+  }
+
+  /* 以填表为主的页面收窄，输入框不必横跨整屏 */
+  .ds-narrow {
+    max-width: 760px;
+  }
+
+  /* 普通页面在纸面里留出内边距；概览和详情页的区块是贴边的，自己处理 */
+  .ds-frame-body {
+    padding: 32px clamp(16px, 3.4vw, 40px) 72px;
+  }
+
+  /*
+   * 角标：发丝线交汇处的小橙方块，Cloudflare 那套"蓝图"感的来源。
+   * 只放在几个结构性的转角上，多了就成了装饰。
+   */
+  .ds-sq {
     position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1px;
-    background: linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.16) 0%,
-      rgba(255, 255, 255, 0.05) 32%,
-      rgba(255, 255, 255, 0.02) 62%,
-      rgba(255, 255, 255, 0.06) 100%
-    );
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    mask-composite: exclude;
+    z-index: 3;
+    width: 7px;
+    height: 7px;
+    background: var(--color-brand);
+    box-shadow: 0 0 0 1px var(--ds-bg-surface);
+    transform: translate(-50%, -50%);
     pointer-events: none;
-    z-index: 0;
+  }
+  /* 窄屏上纸面没有左右边线，压在边线上的角标也就没有意义了 */
+  @media (max-width: 1240px) {
+    .ds-frame > .ds-sq,
+    .ds-sq-edge {
+      display: none;
+    }
   }
 
-  /*
-   * 下拉里的条目，登录菜单和用户菜单共用。
-   *
-   * 字号必须显式写死：button 默认继承父容器，而下拉容器没设字号时会一路继承到
-   * body 的 16px —— 同一个菜单里 <a> 是 13px、<button> 是 16px 的错位就是这么来的。
-   */
-  .ds-menu-item {
+  /* —— 区块 —— */
+
+  .ds-sec {
+    position: relative;
+    padding: 28px clamp(16px, 3.4vw, 40px);
+    border-bottom: 1px solid var(--ds-border);
+  }
+  .ds-sec:last-child {
+    border-bottom: none;
+  }
+  .ds-sec-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .ds-sec-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    color: var(--ds-text-primary);
+  }
+  .ds-sec-desc {
+    margin: 2px 0 0;
+    font-size: 13px;
+    color: var(--ds-text-description);
+  }
+
+  /* —— 页头（概览 / 详情的大标题区） —— */
+
+  .ds-hero {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px 24px;
+    flex-wrap: wrap;
+    padding: 40px clamp(16px, 3.4vw, 40px) 32px;
+    border-bottom: 1px solid var(--ds-border);
+  }
+  .ds-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 28px;
+    padding: 0 12px 0 10px;
+    border: 1px solid var(--ds-border);
+    border-radius: 999px;
+    font-size: 12.5px;
+    color: var(--ds-text-description);
+    background: var(--ds-bg-surface);
+    white-space: nowrap;
+  }
+  .ds-display {
+    margin: 14px 0 0;
+    font-size: clamp(32px, 4.2vw, 44px);
+    line-height: 1.1;
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    color: var(--ds-text-primary);
+  }
+  .ds-lede {
+    margin: 10px 0 0;
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--ds-text-description);
+  }
+
+  /* 普通页面的页头 */
+  .ds-page-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px 20px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .ds-page-title {
+    margin: 0;
+    font-size: 30px;
+    line-height: 1.2;
+    font-weight: 500;
+    letter-spacing: -0.025em;
+    color: var(--ds-text-primary);
+  }
+  .ds-page-desc {
+    margin: 8px 0 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--ds-text-description);
+  }
+  .ds-page-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .ds-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--ds-text-description);
+    min-width: 0;
+  }
+  .ds-breadcrumb a {
+    color: var(--ds-text-description);
+    text-decoration: none;
+    transition: color 0.15s ease;
+  }
+  .ds-breadcrumb a:hover {
+    color: var(--ds-text-primary);
+  }
+  .ds-breadcrumb [aria-current] {
+    color: var(--ds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+}
+
+/* ————————————————————————————————————————————————————————
+   基础组件
+   ———————————————————————————————————————————————————————— */
+
+@layer components {
+  /* 卡片：方角、发丝线、白底，没有投影 */
+  .ds-surface {
+    position: relative;
+    background: var(--ds-bg-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 0;
+  }
+
+  .ds-card-head {
     display: flex;
     align-items: flex-start;
-    gap: 9px;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--ds-divider);
+  }
+  .ds-card-title {
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.4;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--ds-text-primary);
+  }
+  .ds-card-desc {
+    margin: 3px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ds-text-description);
+  }
+  .ds-card-body {
+    padding: 22px;
+  }
+  @media (max-width: 560px) {
+    .ds-card-head {
+      padding: 14px 16px;
+      flex-wrap: wrap;
+    }
+    .ds-card-body {
+      padding: 16px;
+    }
+  }
+
+  .ds-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     width: 100%;
-    padding: 9px 10px;
+    min-height: 36px;
+    padding: 0 10px;
     border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--ds-text-secondary);
     font-family: inherit;
-    font-size: 13px;
-    line-height: 1.55;
+    font-size: 13.5px;
+    line-height: 1.4;
     font-weight: 400;
     text-align: left;
     text-decoration: none;
     cursor: pointer;
-    transition: background-color 0.15s ease;
+    transition:
+      background-color 0.12s ease,
+      color 0.12s ease;
   }
   .ds-menu-item > svg {
-    margin-top: 2px;
+    color: var(--ds-text-description);
   }
   .ds-menu-item:hover:not(:disabled) {
     background: var(--ds-bg-hover);
+    color: var(--ds-text-primary);
+  }
+  .ds-menu-item:hover:not(:disabled) > svg {
+    color: var(--ds-text-primary);
+  }
+  .ds-menu-item:focus-visible {
+    outline-offset: -2px;
   }
   .ds-menu-item:disabled {
     cursor: not-allowed;
     opacity: 0.55;
   }
-
-  .ds-surface {
-    position: relative;
-    background: var(--ds-bg-surface);
-    border: 1px solid var(--ds-border);
-    border-radius: var(--radius-ds-lg);
+  .ds-menu-sep {
+    height: 1px;
+    margin: 5px -6px;
+    background: var(--ds-divider);
   }
 
   /*
-   * 浮层：下拉菜单、图表 tooltip。
-   *
-   * **背景必须完全不透明，且不能用 backdrop-filter。** 这里原来是毛玻璃
-   * （72% 半透明白 + blur），结果顶栏的用户菜单里能直接看到背后页面的文字。
-   *
-   * 原因不是层级，是 backdrop-filter 的作用域：带 backdrop-filter 的元素会成为
-   * 后代的 backdrop root，后代自己的 blur 只能采样这个 root 内部已绘制的内容。
-   * 用户菜单渲染在顶栏里，而顶栏正好有 backdrop-filter —— 菜单的 blur 采样不到
-   * 顶栏之外的页面主体，什么也没糊到，就只剩下那 72% 的半透明底在漏字。
-   *
-   * 图表 tooltip 不在顶栏里，毛玻璃本来是生效的，但半透明同样会让读数和背后的
-   * 曲线糊在一起。浮层的职责是让人看清内容，不是展示材质，所以一并改成实心。
+   * 浮层：下拉菜单、图表提示。
+   * 背景必须实心、不能用 backdrop-filter —— 半透明会漏出背后的内容。
    */
   .ds-dropdown {
     background: var(--ds-bg-surface);
     border: 1px solid var(--ds-border);
-    border-radius: var(--radius-ds-md);
+    border-radius: var(--radius-ds-lg);
     box-shadow: var(--ds-shadow-pop);
   }
+  .ds-menu-pop {
+    animation: ds-menu-in 0.15s cubic-bezier(0.2, 0, 0.2, 1);
+    transform-origin: top right;
+  }
+  @keyframes ds-menu-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+    }
+  }
 
-  /*
-   * 排版刻度
-   *
-   * 一共八级文本 + 四级数字，全站只用这些，不再散落 fontSize。
-   * 之前有 21 处硬编码、11 种不同数值（10 / 10.5 / 11 / 11.5 / 15 / 15.5 / 17 / 19 / 21…），
-   * 相邻两级只差 0.5px 的时候，那不叫层级，叫噪声。
-   *
-   * 字号越大字距收得越紧（-0.028em → 0），这是中西文混排里让大标题不显松散的常规做法。
-   */
-  .ds-text-hero {
-    font-size: clamp(30px, 4vw, 46px);
-    line-height: 1.12;
-    font-weight: 700;
-    letter-spacing: -0.028em;
-  }
-  .ds-text-h1 {
-    font-size: clamp(22px, 2.6vw, 30px);
-    line-height: 1.22;
-    font-weight: 700;
-    letter-spacing: -0.022em;
-  }
-  /* slogan 是 h1 的旧名，保留以免漏改的地方掉样式 */
-  .ds-text-slogan {
-    font-size: clamp(22px, 2.6vw, 30px);
-    line-height: 1.22;
-    font-weight: 700;
-    letter-spacing: -0.022em;
-  }
-  .ds-text-title {
-    font-size: 20px;
-    line-height: 1.35;
-    font-weight: 600;
-    letter-spacing: -0.014em;
-  }
+  /* —— 排版刻度 —— */
+
   .ds-text-subtitle {
-    font-size: 16px;
+    font-size: 15px;
     line-height: 1.45;
-    font-weight: 600;
+    font-weight: 500;
     letter-spacing: -0.008em;
   }
   .ds-text-body {
@@ -388,7 +697,6 @@ body {
     font-size: 12px;
     line-height: 1.5;
     font-weight: 400;
-    letter-spacing: 0.006em;
   }
   .ds-text-xs {
     font-size: 11px;
@@ -397,42 +705,19 @@ body {
     letter-spacing: 0.01em;
   }
 
-  /*
-   * 数字刻度
-   *
-   * 指标数字和正文是两套东西：它们要等宽（否则实时跳动时整行会左右抖）、
-   * 要更紧的字距、更重的字重。单独成级，免得每处都手写一遍 fontSize + tabular-nums。
-   */
-  .ds-num-xl,
-  .ds-num-lg,
-  .ds-num-md,
-  .ds-num-sm {
+  .ds-num-md {
+    font-size: 17px;
+    font-weight: 500;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--ds-text-primary);
     font-variant-numeric: tabular-nums;
     font-feature-settings: 'tnum' 1;
-    font-weight: 600;
-    line-height: 1.15;
-    color: var(--ds-text-primary);
   }
-  .ds-num-xl {
-    font-size: 36px;
-    letter-spacing: -0.03em;
-  }
-  .ds-num-lg {
-    font-size: 20px;
-    letter-spacing: -0.02em;
-  }
-  .ds-num-md {
-    font-size: 16px;
-    letter-spacing: -0.015em;
-  }
-  .ds-num-sm {
-    font-size: 13px;
-    letter-spacing: -0.008em;
-  }
-  /* 数字后面跟的单位，比数字弱一档 */
+
   .ds-num-unit {
     font-size: 0.62em;
-    font-weight: 500;
+    font-weight: 400;
     color: var(--ds-text-description);
     margin-left: 3px;
   }
@@ -447,30 +732,34 @@ body {
     color: var(--ds-text-description);
   }
 
-  /* 按钮 */
+  /* —— 按钮：胶囊 —— */
+
   .ds-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
-    border-radius: var(--radius-ds-sm);
-    font-size: 13px;
+    height: 36px;
+    padding: 0 16px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 13.5px;
     font-weight: 500;
     line-height: 1;
-    padding: 0 14px;
-    height: 34px;
-    border: 1px solid transparent;
-    cursor: pointer;
     white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    user-select: none;
     transition:
-      background-color 0.18s cubic-bezier(0.4, 0, 0.2, 1),
-      border-color 0.18s cubic-bezier(0.4, 0, 0.2, 1),
-      color 0.18s cubic-bezier(0.4, 0, 0.2, 1),
-      transform 0.18s cubic-bezier(0.4, 0, 0.2, 1),
-      box-shadow 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease,
+      box-shadow 0.15s ease,
+      transform 0.1s ease;
   }
   .ds-btn:active:not(:disabled) {
-    transform: scale(0.975);
+    transform: scale(0.98);
   }
   .ds-btn:disabled {
     opacity: 0.45;
@@ -480,182 +769,374 @@ body {
     outline: none;
     box-shadow: 0 0 0 3px var(--color-brand-ring);
   }
-
   .ds-btn-primary {
     background: var(--color-brand);
+    border-color: var(--color-brand);
     color: #fff;
   }
   .ds-btn-primary:hover:not(:disabled) {
     background: var(--color-brand-hover);
+    border-color: var(--color-brand-hover);
   }
-
   .ds-btn-ghost {
-    background: transparent;
-    color: var(--ds-text-secondary);
-    border-color: var(--ds-border);
+    background: var(--ds-bg-surface);
+    color: var(--ds-text-primary);
+    border-color: var(--ds-border-control);
   }
   .ds-btn-ghost:hover:not(:disabled) {
-    background: var(--ds-bg-hover);
-    color: var(--ds-text-primary);
+    background: var(--ds-bg-subtle);
     border-color: var(--ds-border-strong);
   }
-
   .ds-btn-danger {
     background: var(--color-danger);
+    border-color: var(--color-danger);
     color: #fff;
   }
   .ds-btn-danger:hover:not(:disabled) {
     filter: brightness(0.94);
   }
-
   .ds-btn-s {
-    height: 28px;
-    padding: 0 10px;
-    font-size: 12px;
-    border-radius: 6px;
+    height: 30px;
+    padding: 0 12px;
+    font-size: 12.5px;
   }
 
-  /*
-   * 纯图标按钮：无边框、无底色。
-   * 主题切换这类开关不该长得像个需要被点的实体按钮，
-   * 一个描边框会让它在顶栏里显得比实际重要。
-   */
   .ds-btn-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
     padding: 0;
-    border: none;
-    border-radius: 8px;
+    border: 1px solid transparent;
+    border-radius: 999px;
     background: transparent;
     color: var(--ds-text-description);
     cursor: pointer;
     transition:
-      background-color 0.18s ease,
-      color 0.18s ease;
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      color 0.15s ease;
   }
   .ds-btn-icon:hover {
-    background: var(--ds-bg-hover);
+    border-color: var(--ds-border);
+    background: var(--ds-bg-surface);
     color: var(--ds-text-primary);
+  }
+  .ds-btn-icon:active {
+    background: var(--ds-bg-subtle);
   }
   .ds-btn-icon:focus-visible {
     outline: none;
     box-shadow: 0 0 0 3px var(--color-brand-ring);
   }
-  /* 浮层里的图标按钮（日历翻页那种），30px 在小面板里太占地方 */
   .ds-btn-icon-s {
-    width: 24px;
-    height: 24px;
-    border-radius: 6px;
+    width: 26px;
+    height: 26px;
   }
 
-  /* 标签 */
+  /* —— 标签与徽标 —— */
+
   .ds-chip {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    height: 22px;
-    padding: 0 8px;
-    border-radius: 6px;
-    font-size: 11.5px;
-    font-weight: 500;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 400;
     line-height: 1;
     background: var(--ds-bg-sunken);
     color: var(--ds-text-secondary);
-    border: 1px solid var(--ds-border);
+    border: none;
     white-space: nowrap;
+  }
+
+  /*
+   * 状态徽标：描边胶囊 + 小圆点。
+   * 文字色用 color-mix 把状态色和正文色混合，浅色主题下压暗、深色主题下提亮，
+   * 一套写法两个主题都读得清。
+   */
+  .ds-badge {
+    --tone: var(--ds-text-description);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--ds-border);
+    background: var(--ds-bg-surface);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    color: var(--ds-text-secondary);
+  }
+  .ds-badge[data-tone] {
+    color: color-mix(in srgb, var(--tone) 78%, var(--ds-text-primary));
+  }
+  .ds-badge[data-tone='warn'],
+  .ds-badge[data-tone='danger'],
+  .ds-badge[data-tone='brand'] {
+    border-color: color-mix(in srgb, var(--tone) 28%, transparent);
+    background: color-mix(in srgb, var(--tone) 6%, var(--ds-bg-surface));
+  }
+  .ds-badge[data-tone='ok'] {
+    --tone: var(--color-ok);
+    color: var(--ds-text-secondary);
+  }
+  .ds-badge[data-tone='warn'] {
+    --tone: var(--color-warn);
+  }
+  .ds-badge[data-tone='danger'] {
+    --tone: var(--color-danger);
+  }
+  .ds-badge[data-tone='brand'] {
+    --tone: var(--color-brand);
+  }
+  .ds-badge[data-tone='idle'] {
+    --tone: var(--color-idle);
+    color: var(--ds-text-description);
+  }
+  .ds-badge-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--tone);
+    flex-shrink: 0;
+  }
+
+  /* —— 分段控件：胶囊底槽 + 会滑动的白色胶囊 —— */
+
+  .ds-seg {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 3px;
+    gap: 2px;
+    border-radius: 999px;
+    background: var(--ds-bg-fill);
+    isolation: isolate;
+    max-width: 100%;
+  }
+  .ds-seg-thumb {
+    position: absolute;
+    z-index: -1;
+    top: 3px;
+    bottom: 3px;
+    left: 0;
+    width: var(--seg-w, 0px);
+    transform: translateX(var(--seg-x, 0px));
+    border-radius: 999px;
+    background: var(--ds-bg-surface);
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.08),
+      0 0 0 0.5px rgba(0, 0, 0, 0.04);
+    opacity: 0;
+  }
+  .ds-seg[data-ready] .ds-seg-thumb {
+    opacity: 1;
+    transition:
+      transform 0.3s cubic-bezier(0.32, 0.72, 0, 1),
+      width 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  html[data-theme='dark'] .ds-seg-thumb {
+    background: #2e2e2e;
+    box-shadow: none;
+  }
+  .ds-seg-item {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--ds-text-description);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 450;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.18s ease;
+  }
+  .ds-seg-item:hover,
+  .ds-seg-item[aria-selected='true'] {
+    color: var(--ds-text-primary);
+  }
+  .ds-seg:not([data-ready]) .ds-seg-item[aria-selected='true'] {
+    background: var(--ds-bg-surface);
+  }
+  .ds-seg-item:focus-visible {
+    outline-offset: -2px;
+  }
+  .ds-seg-count {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ds-text-description);
+  }
+  .ds-seg-s .ds-seg-item {
+    height: 26px;
+    padding: 0 11px;
+    font-size: 12.5px;
+  }
+  .ds-seg-icon .ds-seg-item {
+    width: 34px;
+    padding: 0;
+  }
+
+  /* —— 下划线标签页 —— */
+
+  .ds-tabs {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    border-bottom: 1px solid var(--ds-border);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .ds-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .ds-tab {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 44px;
+    padding: 0 4px;
+    margin-right: 18px;
+    border: none;
+    background: transparent;
+    color: var(--ds-text-description);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 450;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    transition: color 0.15s ease;
+  }
+  .ds-tab:hover,
+  .ds-tab[aria-selected='true'],
+  .ds-tab[aria-current='page'] {
+    color: var(--ds-text-primary);
+  }
+  .ds-tab:focus-visible {
+    outline-offset: -4px;
+  }
+  .ds-tabs-ink {
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    height: 2px;
+    width: var(--ink-w, 0px);
+    transform: translateX(var(--ink-x, 0px));
+    background: var(--ds-text-primary);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .ds-tabs[data-ready] .ds-tabs-ink {
+    opacity: 1;
+    transition:
+      transform 0.32s cubic-bezier(0.32, 0.72, 0, 1),
+      width 0.32s cubic-bezier(0.32, 0.72, 0, 1);
   }
 
   /* —— 弹窗 —— */
 
+  .ds-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    overflow-y: auto;
+    padding: 16px;
+    background: rgba(28, 22, 16, 0.36);
+    animation: ds-fade-in 0.16s ease;
+  }
+  html[data-theme='dark'] .ds-modal-backdrop {
+    background: rgba(0, 0, 0, 0.62);
+  }
   .ds-modal {
     position: relative;
     background: var(--ds-bg-surface);
     border: 1px solid var(--ds-border);
-    border-radius: var(--radius-ds-md);
-    box-shadow: var(--ds-shadow-pop);
-    /* 少了这行，footer 的方角背景会盖住弹窗的圆角 */
+    border-radius: 16px;
+    box-shadow:
+      0 30px 70px -20px rgba(30, 20, 10, 0.3),
+      0 0 0 1px rgba(0, 0, 0, 0.02);
     overflow: hidden;
   }
-
-  /*
-   * 头/身/脚一律不画分隔线，也不给脚部单独上底色。
-   *
-   * 之前脚部是 --ds-bg-sunken，在白色弹窗里拖出一条灰蓝的横带，像是没做完；
-   * 加上头尾各一条 1px 边框，一个五行的表单被切成了三段。
-   * 层次靠留白和对齐建立就够了，线和色块是同一件事说三遍。
-   */
+  .ds-modal-enter {
+    animation: ds-modal-in 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes ds-modal-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px) scale(0.985);
+    }
+  }
   .ds-modal-head {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
-    padding: 18px 18px 6px;
+    gap: 12px;
+    padding: 22px 22px 4px;
   }
-
   .ds-modal-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
+    width: 36px;
+    height: 36px;
+    border-radius: 999px;
     display: grid;
     place-items: center;
     flex-shrink: 0;
-    background: var(--color-brand-soft);
-    color: var(--color-brand);
+    background: var(--ds-bg-sunken);
+    color: var(--ds-text-primary);
   }
-
   .ds-modal-body {
-    padding: 12px 18px;
-    /* 内容再长也不会把弹窗撑出屏幕，自己滚 */
+    padding: 14px 22px 22px;
     max-height: min(64vh, 620px);
     overflow-y: auto;
   }
-
   .ds-modal-foot {
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    padding: 6px 18px 18px;
+    padding: 14px 22px;
+    background: var(--ds-bg-subtle);
+    border-top: 1px solid var(--ds-divider);
   }
 
-  /* —— 表单控件 —— */
+  /* —— 浮层与表单控件 —— */
 
-  /*
-   * 浮层容器：下拉列表、日历面板共用。
-   *
-   * 由 Popover 组件 Portal 到 body 后定位，所以这里只管长相，
-   * left/top/maxHeight 都是行内样式算出来的。
-   */
   .ds-popover {
     position: fixed;
     z-index: 200;
-    /*
-     * 默认不滚动。只有内容长度不可预知的浮层（下拉列表）才开滚动 ——
-     * 日历那种固定 6×7 网格被压出滚动条既难看也难用，它走的是"整体挪位置"策略。
-     */
     overflow: hidden;
-    padding: 4px;
-    border-radius: var(--radius-ds-md);
+    padding: 5px;
+    border-radius: var(--radius-ds-lg);
     border: 1px solid var(--ds-border);
-    /* 和 .ds-dropdown 同理：浮层必须实心，半透明会漏出背后的内容 */
     background: var(--ds-bg-surface);
     box-shadow: var(--ds-shadow-pop);
-    animation: ds-pop-in 0.13s cubic-bezier(0.2, 0, 0.2, 1);
+    animation: ds-pop-in 0.14s cubic-bezier(0.2, 0, 0.2, 1);
   }
-
   .ds-popover[data-scroll] {
     overflow: auto;
   }
-
   @keyframes ds-pop-in {
     from {
       opacity: 0;
-      transform: translateY(-3px) scale(0.985);
+      transform: translateY(-4px) scale(0.985);
     }
   }
-  /* 朝上弹时行内样式带着 translateY(-100%)，不能被动画的 transform 覆盖掉 */
   .ds-popover[style*='translateY(-100%)'] {
     animation-name: ds-pop-in-up;
   }
@@ -665,23 +1146,15 @@ body {
     }
   }
 
-  /*
-   * 下拉框触发器。
-   *
-   * 这里是一个 button，不是 select —— 原生 select 展开后的列表由操作系统绘制，
-   * CSS 完全够不着（macOS 上是深色圆角菜单，Windows 上是方框列表），
-   * 长列表尤其难看。整套换成自绘的 combobox + listbox。
-   */
   .ds-select-trigger {
     display: flex;
     align-items: center;
     gap: 8px;
     width: 100%;
-    padding-right: 10px;
+    padding-right: 12px;
     text-align: left;
     cursor: pointer;
   }
-
   .ds-select-value {
     flex: 1;
     min-width: 0;
@@ -692,7 +1165,6 @@ body {
   .ds-select-value[data-placeholder] {
     color: var(--ds-text-disabled);
   }
-
   .ds-select-arrow {
     color: var(--ds-text-description);
     transition: transform 0.16s ease;
@@ -700,47 +1172,37 @@ body {
   .ds-select-trigger[data-open] .ds-select-arrow {
     transform: rotate(180deg);
   }
-
   .ds-select-list {
     display: flex;
     flex-direction: column;
     gap: 1px;
     outline: none;
   }
-
   .ds-select-option {
     display: flex;
     align-items: center;
     gap: 7px;
-    padding: 7px 8px;
-    border-radius: 6px;
+    padding: 7px 9px;
+    border-radius: 7px;
     font-size: 13px;
     line-height: 1.5;
     color: var(--ds-text-secondary);
     cursor: pointer;
     user-select: none;
   }
-
-  /*
-   * 高亮只跟 data-active 走，不用 :hover。
-   *
-   * 键盘移动和鼠标悬停必须表现成同一个状态，各用一套的话会同时亮起两行。
-   * 组件在 pointerenter 时把 active 同步过来，所以鼠标一样有反馈。
-   */
+  /* 高亮只跟 data-active 走：键盘移动和鼠标悬停必须是同一个状态 */
   .ds-select-option[data-active] {
     background: var(--ds-bg-hover);
     color: var(--ds-text-primary);
   }
   .ds-select-option[data-selected] {
-    color: var(--color-brand);
+    color: var(--ds-text-primary);
     font-weight: 500;
   }
   .ds-select-option[data-disabled] {
     color: var(--ds-text-disabled);
     cursor: not-allowed;
   }
-
-  /* 勾号位固定占位，选中与否都占同样宽度，文字才不会左右跳 */
   .ds-select-check {
     width: 13px;
     display: flex;
@@ -748,7 +1210,6 @@ body {
     flex-shrink: 0;
     color: var(--color-brand);
   }
-
   .ds-select-label {
     flex: 1;
     min-width: 0;
@@ -756,19 +1217,15 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
   .ds-select-hint {
     color: var(--ds-text-description);
     flex-shrink: 0;
   }
-
   .ds-select-empty {
     padding: 10px;
     text-align: center;
     color: var(--ds-text-description);
   }
-
-  /* —— 日期选择 —— */
 
   .ds-date-trigger {
     display: flex;
@@ -778,12 +1235,10 @@ body {
     text-align: left;
     cursor: pointer;
   }
-
   .ds-date-icon {
     color: var(--ds-text-description);
     flex-shrink: 0;
   }
-
   .ds-date-value {
     flex: 1;
     min-width: 0;
@@ -794,7 +1249,6 @@ body {
   .ds-date-value[data-placeholder] {
     color: var(--ds-text-disabled);
   }
-
   .ds-date-clear {
     display: flex;
     align-items: center;
@@ -814,7 +1268,6 @@ body {
     padding: 4px;
     user-select: none;
   }
-
   .ds-cal-head {
     display: flex;
     align-items: center;
@@ -822,22 +1275,18 @@ body {
     gap: 4px;
     margin-bottom: 6px;
   }
-
   .ds-cal-title {
-    font-weight: 600;
+    font-weight: 500;
     color: var(--ds-text-primary);
   }
-
   .ds-cal-grid {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
     gap: 2px;
   }
-
   .ds-cal-week {
     margin-bottom: 2px;
   }
-
   .ds-cal-wd {
     display: flex;
     align-items: center;
@@ -845,14 +1294,13 @@ body {
     height: 24px;
     color: var(--ds-text-description);
   }
-
   .ds-cal-day {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 30px;
     border: none;
-    border-radius: 7px;
+    border-radius: 999px;
     background: transparent;
     color: var(--ds-text-secondary);
     font-family: inherit;
@@ -863,7 +1311,6 @@ body {
   .ds-cal-day:hover {
     background: var(--ds-bg-hover);
   }
-  /* 邻月的日期要能看见但明显退后，否则会误点 */
   .ds-cal-day[data-outside] {
     color: var(--ds-text-disabled);
   }
@@ -872,39 +1319,30 @@ body {
     font-weight: 600;
   }
   .ds-cal-day[data-selected] {
-    background: var(--color-brand);
-    color: #fff;
+    background: var(--ds-text-primary);
+    color: var(--ds-bg-surface);
     font-weight: 600;
   }
   .ds-cal-day[data-cursor]:not([data-selected]) {
     box-shadow: inset 0 0 0 1px var(--ds-border-strong);
   }
-
   .ds-cal-foot {
     display: flex;
     gap: 6px;
     justify-content: flex-end;
     margin-top: 6px;
     padding-top: 6px;
-    border-top: 1px solid var(--ds-border);
+    border-top: 1px solid var(--ds-divider);
   }
 
-  /*
-   * 日期范围选择。
-   *
-   * 双月并排 + 左侧快捷项。快捷项列固定宽度，日历区自然宽 —— 让快捷项
-   * 跟着最长的标签伸缩，会在切换机器（账单日不同）时把整个面板挤变形。
-   */
   .ds-range-trigger {
     min-width: 190px;
   }
-
   .ds-range {
     display: flex;
     align-items: stretch;
     user-select: none;
   }
-
   .ds-range-presets {
     display: flex;
     flex-direction: column;
@@ -912,48 +1350,46 @@ body {
     width: 104px;
     flex-shrink: 0;
     padding: 4px 8px 4px 4px;
-    border-right: 1px solid var(--ds-border);
+    border-right: 1px solid var(--ds-divider);
   }
-
   .ds-range-preset {
-    padding: 6px 9px;
+    padding: 6px 10px;
     border: none;
-    border-radius: 7px;
+    border-radius: 999px;
     background: transparent;
     color: var(--ds-text-secondary);
     font-family: inherit;
     font-size: 12.5px;
     text-align: left;
     cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease;
   }
   .ds-range-preset:hover:not(:disabled) {
     background: var(--ds-bg-hover);
     color: var(--ds-text-primary);
   }
   .ds-range-preset[data-active] {
-    background: var(--ds-bg-active, var(--ds-bg-hover));
-    color: var(--color-brand);
-    font-weight: 600;
+    background: var(--ds-bg-fill);
+    color: var(--ds-text-primary);
+    font-weight: 500;
   }
   .ds-range-preset:disabled {
     color: var(--ds-text-disabled);
     cursor: default;
   }
-
   .ds-range-cals {
     flex: 1;
     min-width: 0;
     padding: 4px;
   }
-
   .ds-range-nav {
     display: flex;
     align-items: center;
     gap: 4px;
     margin-bottom: 6px;
   }
-
   .ds-range-titles {
     flex: 1;
     display: grid;
@@ -963,33 +1399,25 @@ body {
   .ds-range-titles > span {
     text-align: center;
   }
-
   .ds-range-grids {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
   }
-
   .ds-range-month {
     min-width: 0;
   }
-
-  /*
-   * 区间中段用浅色连成一条，两端才是实心。
-   *
-   * 只把两端标出来的话，跨月选择时中间那一整片没有任何反馈，人看不出
-   * 自己选的是 3 天还是 30 天。圆角只留在区间外侧，中段方角才连得起来。
-   */
+  /* 区间中段用浅色连成一条，两端才是实心 */
   .ds-range-day[data-in-range] {
-    background: color-mix(in srgb, var(--color-brand) 12%, transparent);
+    background: var(--ds-bg-fill);
     color: var(--ds-text-primary);
     border-radius: 0;
   }
   .ds-range-day[data-range-start] {
-    border-radius: 7px 0 0 7px;
+    border-radius: 999px 0 0 999px;
   }
   .ds-range-day[data-range-end] {
-    border-radius: 0 7px 7px 0;
+    border-radius: 0 999px 999px 0;
   }
   .ds-range-day:disabled {
     color: var(--ds-text-disabled);
@@ -998,7 +1426,6 @@ body {
   .ds-range-day:disabled:hover {
     background: transparent;
   }
-
   .ds-range-foot {
     display: flex;
     align-items: center;
@@ -1006,10 +1433,8 @@ body {
     min-height: 22px;
     margin-top: 6px;
     padding-top: 6px;
-    border-top: 1px solid var(--ds-border);
+    border-top: 1px solid var(--ds-divider);
   }
-
-  /* 窄屏放不下两个月，退回单列 */
   @media (max-width: 620px) {
     .ds-range {
       flex-direction: column;
@@ -1020,7 +1445,7 @@ body {
       width: auto;
       padding: 4px;
       border-right: none;
-      border-bottom: 1px solid var(--ds-border);
+      border-bottom: 1px solid var(--ds-divider);
     }
     .ds-range-titles,
     .ds-range-grids {
@@ -1032,14 +1457,7 @@ body {
     }
   }
 
-  /*
-   * 复选框。
-   *
-   * 原生 input[type=checkbox] 的勾号形状是系统画的，accent-color 只能改颜色 ——
-   * macOS 是圆角小方块加细勾，Windows 是直角加粗勾，跟图标集里的 IconCheck 完全
-   * 不是一套。这里把真正的 input 藏在原位（保留焦点、键盘、表单语义和无障碍），
-   * 视觉上盖一个自绘的方块。
-   */
+  /* 复选框：真 input 留在原位透明铺满，视觉自绘 */
   .ds-check {
     position: relative;
     display: inline-flex;
@@ -1047,7 +1465,6 @@ body {
     width: 16px;
     height: 16px;
   }
-
   .ds-check input {
     position: absolute;
     inset: 0;
@@ -1057,7 +1474,6 @@ body {
     opacity: 0;
     cursor: pointer;
   }
-
   .ds-check-box {
     display: flex;
     align-items: center;
@@ -1074,17 +1490,14 @@ body {
       color 0.14s ease;
     pointer-events: none;
   }
-
   .ds-check input:checked + .ds-check-box {
-    background: var(--check-tone, var(--color-brand));
-    border-color: var(--check-tone, var(--color-brand));
-    color: #fff;
+    background: var(--check-tone, var(--ds-text-primary));
+    border-color: var(--check-tone, var(--ds-text-primary));
+    color: var(--ds-bg-surface);
   }
-
   .ds-check input:focus-visible + .ds-check-box {
     box-shadow: 0 0 0 3px var(--color-brand-ring);
   }
-
   .ds-check input:disabled + .ds-check-box {
     opacity: 0.45;
   }
@@ -1092,28 +1505,18 @@ body {
     cursor: not-allowed;
   }
 
-  /*
-   * 国家/地区旗帜。
-   *
-   * 真实 SVG 旗帜（public/flags/，flag-icons，MIT）。之前试过 emoji 和文字徽标，
-   * 前者 Windows 不渲染，后者认不出是哪儿 —— 见 CountryBadge.tsx。
-   *
-   * 圆角 + 极淡描边：旗帜里有大面积纯白的（日本、韩国），不描边会和白底糊在一起，
-   * 看着像缺了一块。
-   */
+  /* 旗帜：真实 SVG，圆角 + 极淡描边，白色旗面不至于糊进背景 */
   .ds-flag {
     display: inline-block;
     flex-shrink: 0;
-    border-radius: 3px;
+    border-radius: 2px;
     object-fit: cover;
-    box-shadow: 0 0 0 1px rgba(16, 20, 32, 0.1);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
     vertical-align: middle;
   }
-
   html[data-theme='dark'] .ds-flag {
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
   }
-
   .ds-flag-unknown {
     display: inline-flex;
     align-items: center;
@@ -1126,57 +1529,148 @@ body {
     height: 70%;
   }
 
-  /* 输入框 */
+  /* 输入框：表单里是 8px 圆角；搜索框单独做成胶囊 */
   .ds-input {
-    height: 34px;
+    height: 36px;
     padding: 0 12px;
     border-radius: var(--radius-ds-sm);
-    border: 1px solid var(--ds-border);
+    border: 1px solid var(--ds-border-control);
     background: var(--ds-bg-surface);
     color: var(--ds-text-primary);
-    font-size: 13px;
+    font-size: 13.5px;
     font-family: inherit;
     outline: none;
     transition:
-      border-color 0.18s ease,
-      box-shadow 0.18s ease;
+      border-color 0.15s ease,
+      box-shadow 0.15s ease;
     width: 100%;
   }
   .ds-input::placeholder {
     color: var(--ds-text-disabled);
   }
-  .ds-input:focus {
-    border-color: var(--color-brand);
-    box-shadow: 0 0 0 3px var(--color-brand-ring);
-  }
-
-  /* 卡片 hover 的微抬升 —— 幅度要小，大了就俗了 */
-  .ds-lift {
-    transition:
-      transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-      box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-      border-color 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .ds-lift:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--ds-shadow-hover);
+  .ds-input:hover:not(:disabled):not(:focus) {
     border-color: var(--ds-border-strong);
   }
-
+  .ds-input:focus,
+  .ds-input[data-open] {
+    border-color: var(--ds-text-primary);
+    box-shadow: 0 0 0 3px var(--ds-bg-fill);
+  }
+  .ds-input:disabled {
+    background: var(--ds-bg-sunken);
+    color: var(--ds-text-description);
+    cursor: not-allowed;
+  }
   /*
-   * 文字提示。
+   * 去掉浏览器自己画的那些东西。
    *
-   * 深色实心底（浅色主题下也是深底）—— 提示是临时浮在内容之上的东西，
-   * 用反色能立刻和页面区分开，不必再靠边框描一圈。
-   *
-   * pointer-events: none 是硬性要求：提示框经常正好盖在触发它的按钮上方，
-   * 能接收鼠标的话按钮就点不动了。
+   * appearance:none 拿掉 iOS 的内阴影和系统圆角；自动填充的浅蓝/浅黄底用一圈
+   * 足够大的内阴影盖住（这是唯一能盖住它的办法，background 改不动）；
+   * Edge 的"显示密码"眼睛、Safari 的钥匙/联系人图标都藏掉 —— 密码框有自己画的按钮。
    */
+  .ds-input {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .ds-input:-webkit-autofill,
+  .ds-input:-webkit-autofill:hover {
+    -webkit-text-fill-color: var(--ds-text-primary);
+    caret-color: var(--ds-text-primary);
+    box-shadow: 0 0 0 1000px var(--ds-bg-surface) inset;
+  }
+  .ds-input:-webkit-autofill:focus {
+    box-shadow:
+      0 0 0 1000px var(--ds-bg-surface) inset,
+      0 0 0 3px var(--ds-bg-fill);
+  }
+  .ds-input::-ms-reveal,
+  .ds-input::-ms-clear {
+    display: none;
+  }
+  .ds-input::-webkit-credentials-auto-fill-button,
+  .ds-input::-webkit-contacts-auto-fill-button,
+  .ds-input::-webkit-strong-password-auto-fill-button {
+    visibility: hidden;
+    pointer-events: none;
+    position: absolute;
+    right: 0;
+  }
+  .ds-input::-webkit-search-cancel-button,
+  .ds-input::-webkit-search-decoration,
+  .ds-input::-webkit-inner-spin-button,
+  .ds-input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  /* 多行输入：高度随内容走（组件里算），不给系统的拖拽角 */
+  .ds-textarea {
+    height: auto;
+    min-height: 76px;
+    padding-block: 9px;
+    line-height: 1.6;
+    resize: none;
+  }
+
+  /* 带图标、清空按钮的输入框：外面包一层定位，图标和按钮压在框里 */
+  .ds-input-wrap {
+    position: relative;
+    display: block;
+    width: 100%;
+  }
+  .ds-input-leading {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    color: var(--ds-text-disabled);
+    pointer-events: none;
+  }
+  .ds-input-pill .ds-input-leading {
+    left: 14px;
+  }
+  .ds-input-trailing {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+  }
+  .ds-input-btn {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--ds-text-description);
+    cursor: pointer;
+    transition:
+      background-color 0.15s ease,
+      color 0.15s ease;
+  }
+  .ds-input-btn:hover {
+    background: var(--ds-bg-hover);
+    color: var(--ds-text-primary);
+  }
+  .ds-input-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .ds-input-pill {
+    border-radius: 999px;
+  }
+
+  /* 文字提示：反色实心底。pointer-events:none 是硬性要求，否则盖住按钮就点不动了 */
   .ds-tooltip {
     position: fixed;
     z-index: 300;
-    padding: 5px 9px;
-    border-radius: 7px;
+    padding: 6px 10px;
+    border-radius: 8px;
     background: var(--ds-tooltip-bg);
     color: var(--ds-tooltip-fg);
     font-family: var(--font-sans);
@@ -1185,11 +1679,10 @@ body {
     font-weight: 400;
     text-align: left;
     white-space: pre-line;
-    box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.35);
     pointer-events: none;
     animation: ds-tip-in 0.12s ease;
   }
-
   @keyframes ds-tip-in {
     from {
       opacity: 0;
@@ -1197,39 +1690,29 @@ body {
     }
   }
 
-  /* —— 表单校验与提示 —— */
-
   .ds-field-req {
     color: var(--color-danger);
     margin-left: 3px;
   }
-
   .ds-field-error {
     color: var(--color-danger);
   }
-
-  /*
-   * 出错的输入框描红。
-   *
-   * 只靠颜色是不够的（红绿色盲看不出区别），所以错误文案永远同时出现在字段下方，
-   * 并带 role="alert" 让屏幕阅读器读出来。颜色只是让人扫一眼就能定位到哪一行。
-   */
   .ds-field[data-invalid] .ds-input,
   .ds-input[aria-invalid='true'] {
     border-color: var(--color-danger);
   }
   .ds-field[data-invalid] .ds-input:focus,
   .ds-input[aria-invalid='true']:focus {
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 22%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 18%, transparent);
   }
 
   .ds-alert {
     display: flex;
-    gap: 9px;
-    padding: 10px 12px;
+    gap: 10px;
+    padding: 12px 14px;
     border-radius: var(--radius-ds-sm);
-    background: color-mix(in srgb, var(--alert-tone) 7%, transparent);
-    border: 1px solid color-mix(in srgb, var(--alert-tone) 22%, transparent);
+    background: color-mix(in srgb, var(--alert-tone) 5%, var(--ds-bg-surface));
+    border: 1px solid color-mix(in srgb, var(--alert-tone) 22%, var(--ds-border));
     color: var(--ds-text-secondary);
   }
   .ds-alert[data-tone='danger'] {
@@ -1239,22 +1722,20 @@ body {
     --alert-tone: var(--color-warn);
   }
   .ds-alert[data-tone='info'] {
-    --alert-tone: var(--color-brand);
+    --alert-tone: var(--ds-text-description);
   }
   .ds-alert[data-tone='success'] {
     --alert-tone: var(--color-ok);
   }
-
   .ds-alert-icon {
     color: var(--alert-tone);
-    margin-top: 1px;
+    margin-top: 2px;
     flex-shrink: 0;
     display: flex;
   }
-
   .ds-alert-title {
-    font-weight: 600;
-    color: var(--alert-tone);
+    font-weight: 500;
+    color: var(--ds-text-primary);
   }
   .ds-alert-title + .ds-alert-body {
     margin-top: 2px;
@@ -1264,135 +1745,125 @@ body {
     padding-left: 16px;
   }
 
-  /*
-   * 表单里的分组间隔。
-   *
-   * 原来这几处画的是 1px 实线，一个表单被切成四段，线比内容还抢眼。
-   * 换成纯留白：组内 16px、组间 24px，靠节奏区分层次就够了，
-   * 不必每次分组都劳驾一条线。
-   */
-  /*
-   * 可横向滚动的表格容器。
-   *
-   * 表头和数据行都是 grid 且列宽固定，容器窄了必须能滚 —— 但要让里面的行
-   * 撑到内容宽度而不是被压缩，否则滚动条出来了列还是挤在一起。
-   */
   .ds-table-scroll > * {
-    min-width: 830px;
+    min-width: 860px;
   }
-
-  /* 手机上把滚动条画出来，否则没人知道右边还有东西 */
   @media (max-width: 720px) {
-    .ds-table-scroll {
-      scrollbar-width: thin;
-    }
     .ds-table-scroll::-webkit-scrollbar {
       height: 6px;
     }
-    .ds-table-scroll::-webkit-scrollbar-thumb {
-      background: var(--ds-border-strong);
-      border-radius: 999px;
-    }
+  }
+
+  .ds-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .ds-table th {
+    height: 40px;
+    padding: 0 16px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 450;
+    color: var(--ds-text-description);
+    background: var(--ds-bg-subtle);
+    border-bottom: 1px solid var(--ds-border);
+    white-space: nowrap;
+  }
+  .ds-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--ds-divider);
+    vertical-align: middle;
+  }
+  .ds-table tbody tr {
+    transition: background-color 0.12s ease;
+  }
+  .ds-table tbody tr:hover {
+    background: var(--ds-bg-subtle);
+  }
+  .ds-table tbody tr:last-child td {
+    border-bottom: none;
   }
 
   /*
-   * 配额进度条。
-   *
-   * 四档配色，越接近耗尽越扎眼。用 data-level 而不是内联样式，是为了让
-   * 填充条、百分比数字、告警文案三处颜色从同一个来源取，不会各调各的。
+   * 配额进度条。四档配色，越接近耗尽越扎眼。
+   * 用 data-level 而不是内联样式，填充条、百分比、告警文案三处颜色从同一个来源取。
    */
   .ds-quota {
     display: flex;
     flex-direction: column;
-    gap: 7px;
-    margin-bottom: 16px;
-    padding-bottom: 15px;
-    border-bottom: 1px solid var(--ds-border);
-    --quota-color: var(--color-brand);
+    gap: 9px;
+    margin-bottom: 20px;
+    padding-bottom: 18px;
+    border-bottom: 1px dashed var(--ds-border);
+    --quota-color: var(--ds-data);
   }
   .ds-quota[data-level='warn'] {
     --quota-color: var(--color-warn);
   }
-  .ds-quota[data-level='danger'] {
-    --quota-color: var(--color-danger);
-  }
-  /* 95% 以上加一层呼吸，让它在余光里也能被注意到 */
+  .ds-quota[data-level='danger'],
   .ds-quota[data-level='critical'] {
     --quota-color: var(--color-danger);
   }
   .ds-quota[data-level='critical'] .ds-quota-fill {
     animation: ds-quota-pulse 1.8s ease-in-out infinite;
   }
-
   @keyframes ds-quota-pulse {
     50% {
       opacity: 0.62;
     }
   }
-
   .ds-quota-head {
     display: flex;
     align-items: baseline;
     gap: 8px;
     flex-wrap: wrap;
   }
-
   .ds-quota-used {
-    font-weight: 600;
+    font-weight: 500;
     color: var(--quota-color);
   }
-
   .ds-quota-track {
     position: relative;
-    height: 8px;
+    height: 6px;
     border-radius: 999px;
-    background: var(--ds-bg-sunken);
+    background: var(--ds-bg-track);
     overflow: visible;
   }
-
   .ds-quota-fill {
     position: absolute;
     inset: 0 auto 0 0;
     border-radius: 999px;
     background: var(--quota-color);
     transition:
-      width 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+      width 0.7s cubic-bezier(0.22, 1, 0.36, 1),
       background-color 0.3s;
   }
-
-  /*
-   * 周期进度刻度。
-   *
-   * 流量条越过这根线 = 用得比时间快。这一条比任何百分比都直观：
-   * 80% 在周期第 3 天和第 27 天是完全不同的两件事。
-   */
+  /* 周期进度刻度：流量条越过这根线 = 用得比时间快 */
   .ds-quota-tick {
     position: absolute;
-    top: -3px;
-    bottom: -3px;
+    top: -4px;
+    bottom: -4px;
     width: 2px;
     margin-left: -1px;
     border-radius: 2px;
-    background: var(--ds-text-disabled);
+    background: var(--color-brand);
     cursor: help;
   }
-
   .ds-quota-foot {
     display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
   }
-
   .ds-quota-pct {
-    font-weight: 600;
+    font-family: var(--font-mono);
+    font-weight: 500;
     color: var(--quota-color);
   }
-
   .ds-quota-warn {
     color: var(--color-danger);
   }
-
   .ds-quota-unlimited {
     flex-direction: row;
     align-items: baseline;
@@ -1400,43 +1871,6 @@ body {
     flex-wrap: wrap;
   }
 
-  /* —— 概览汇总条 —— */
-
-  .ds-summary {
-    display: flex;
-    flex-wrap: wrap;
-  }
-
-  /*
-   * 每格至少 148px，能长能缩。
-   *
-   * flex-grow:1 是关键：换行后最后一行的格子会拉伸填满整行，不会像 grid
-   * 那样留下一块没有背景色的空位。min-width:0 同样必需 —— flex 项目默认
-   * min-width:auto，内容（比如很长的金额）会把格子顶宽，撑破整行布局。
-   */
-  .ds-summary-cell {
-    flex: 1 1 148px;
-    min-width: 0;
-    padding: 14px 16px;
-    background: var(--ds-bg-surface);
-    /* 右、下各一道线；最外圈那道被容器的 overflow:hidden 裁掉 */
-    box-shadow:
-      1px 0 0 var(--ds-border),
-      0 1px 0 var(--ds-border);
-  }
-
-  /* 手机上格子更窄，内边距和数字都收一档，否则金额之类的长值会顶到边 */
-  @media (max-width: 560px) {
-    .ds-summary-cell {
-      flex-basis: 130px;
-      padding: 12px 13px;
-    }
-    .ds-summary-cell .ds-num-lg {
-      font-size: 17px;
-    }
-  }
-
-  /* 单行省略。长数值、长标签一律截断而不是撑破布局 */
   .ds-ellipsis {
     min-width: 0;
     overflow: hidden;
@@ -1444,25 +1878,15 @@ body {
     white-space: nowrap;
   }
 
-  /* 工具栏里的强调图标按钮：无边框，但用品牌色让它不至于淹没在一排灰图标里 */
-  .ds-btn-icon-accent {
-    color: var(--color-brand);
-  }
-  .ds-btn-icon-accent:hover {
-    background: var(--color-brand-soft);
-    color: var(--color-brand);
-  }
-
-  /* 接入命令：等宽、可横向滚，行尾的续行反斜杠要能看清 */
   .ds-enroll-cmd {
     margin: 0;
-    padding: 11px 12px;
+    padding: 12px 14px;
     border-radius: var(--radius-ds-sm);
     background: var(--ds-bg-sunken);
     border: 1px solid var(--ds-border);
     overflow-x: auto;
     font-family: var(--font-mono);
-    font-size: 11.5px;
+    font-size: 12px;
     line-height: 1.85;
     color: var(--ds-text-secondary);
     white-space: pre;
@@ -1470,21 +1894,12 @@ body {
     user-select: all;
   }
 
-  /* 标签面板切换：和图表换挡同一套节奏，避免两处动感不一致 */
   .ds-tab-panel {
-    animation: ds-chart-in 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
+    animation: ds-chart-in 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
   }
-
-  /*
-   * 图表换挡动画。
-   *
-   * 切时间范围时整块重新挂载，用一次很短的淡入 + 轻微上移把"跳变"抹平。
-   * 幅度必须小：图表本身信息密度高，位移大了会让人以为布局在抖。
-   */
   .ds-chart-swap {
-    animation: ds-chart-in 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
+    animation: ds-chart-in 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
   }
-
   @keyframes ds-chart-in {
     from {
       opacity: 0;
@@ -1495,11 +1910,969 @@ body {
   .ds-form-gap {
     height: 8px;
   }
-
   .ds-divider {
     height: 1px;
-    background: var(--ds-border);
+    background: var(--ds-divider);
     border: 0;
+  }
+
+  .ds-kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border: 1px solid var(--ds-border);
+    border-radius: 5px;
+    background: var(--ds-bg-surface);
+    color: var(--ds-text-description);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  /* 长得像链接的按钮（句子里的"查看配置步骤"这种） */
+  .ds-link-btn:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  /* 可复制的文字：IP、主机名 */
+  .ds-copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 6px;
+    margin: -2px -6px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+  .ds-copy > svg {
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  .ds-copy:hover {
+    background: var(--ds-bg-hover);
+    color: var(--ds-text-primary);
+  }
+  .ds-copy:hover > svg,
+  .ds-copy:focus-visible > svg {
+    opacity: 1;
+  }
+
+  /* 占比排行的一行：名称和数值一行，下面一根细条 */
+  .ds-barlist-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    padding: 12px 0;
+    border: none;
+    border-bottom: 1px solid var(--ds-divider);
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+  }
+  .ds-barlist-row:last-child {
+    border-bottom: none;
+  }
+
+  /* —— 占用条 —— */
+
+  .ds-meter-track {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--ds-bg-track);
+    overflow: hidden;
+  }
+  .ds-meter-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 999px;
+    transition:
+      width 0.8s cubic-bezier(0.22, 1, 0.36, 1),
+      background-color 0.3s ease;
+  }
+}
+
+/* ————————————————————————————————————————————————————————
+   概览
+   ———————————————————————————————————————————————————————— */
+
+@layer components {
+  /*
+   * 汇总格子：共用发丝线的一排格子（bento）。
+   *
+   * 每个格子自己画右边和下边那道线，最外圈多出来的线被容器 overflow:hidden 裁掉。
+   * 不用 gap + 底色的做法：最后一行没排满时，空位会露出一块线的颜色。
+   */
+  .ds-bento-wrap {
+    container-type: inline-size;
+    border-bottom: 1px solid var(--ds-border);
+    overflow: hidden;
+  }
+  .ds-bento {
+    display: grid;
+    grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr));
+    margin: 0 -1px -1px 0;
+  }
+  .ds-bento > * {
+    box-shadow:
+      inset -1px 0 0 var(--ds-border),
+      inset 0 -1px 0 var(--ds-border);
+  }
+  @container (max-width: 900px) {
+    .ds-bento {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
+    .ds-bento > * {
+      grid-column: span 2;
+    }
+    .ds-bento[data-count='5'] > :nth-child(n + 4),
+    .ds-bento[data-count='4'] > *,
+    .ds-bento[data-count='2'] > * {
+      grid-column: span 3;
+    }
+  }
+  /*
+   * 手机上两列、第一格通栏。
+   * 选择器的优先级要压过上面 900px 那条（[data-count='5'] > :nth-child(n+4) 是 0-3-0），
+   * 否则第 4、5 格仍然按 span 3 排，在两列的网格里撑出隐式列，整排错位。
+   */
+  @container (max-width: 520px) {
+    .ds-bento {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .ds-bento[data-count] > :nth-child(n) {
+      grid-column: span 1;
+    }
+    .ds-bento[data-count='5'] > :first-child,
+    .ds-bento[data-count='3'] > :first-child {
+      grid-column: span 2;
+    }
+  }
+
+  .ds-stat {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 24px clamp(16px, 2.4vw, 28px) 22px;
+  }
+  .ds-stat-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--ds-text-description);
+  }
+  .ds-stat-value {
+    margin-top: 12px;
+    font-size: 36px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: -0.04em;
+    color: var(--ds-text-primary);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ds-stat-value small {
+    font-size: 17px;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+    color: var(--ds-text-disabled);
+    margin-left: 2px;
+  }
+  .ds-stat-viz {
+    margin-top: 16px;
+    height: 28px;
+    display: flex;
+    align-items: flex-end;
+  }
+  .ds-stat-hint {
+    margin-top: auto;
+    padding-top: 12px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--ds-text-description);
+    overflow-wrap: anywhere;
+  }
+  .ds-stat-hint[data-tone='warn'] {
+    color: color-mix(in srgb, var(--color-warn) 82%, var(--ds-text-primary));
+  }
+  .ds-stat-hint[data-tone='danger'] {
+    color: color-mix(in srgb, var(--color-danger) 82%, var(--ds-text-primary));
+  }
+  @media (max-width: 560px) {
+    .ds-stat-value {
+      font-size: 28px;
+    }
+    .ds-stat-value small {
+      font-size: 14px;
+    }
+  }
+
+  /* 在线构成条：在线是炭黑，告警是橙，离线是浅灰 */
+  .ds-stack {
+    display: flex;
+    gap: 3px;
+    width: 100%;
+    height: 6px;
+  }
+  .ds-stack > span {
+    height: 100%;
+    border-radius: 3px;
+    transition: flex-grow 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* —— 工具栏 —— */
+
+  .ds-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 16px clamp(16px, 3.4vw, 40px);
+    border-bottom: 1px solid var(--ds-border);
+  }
+  .ds-toolbar-search {
+    flex: 0 1 300px;
+    min-width: 180px;
+  }
+  .ds-toolbar-spacer {
+    flex: 1;
+  }
+  .ds-toolbar .ds-select-trigger {
+    border-radius: 999px;
+    padding-left: 14px;
+  }
+  @media (max-width: 720px) {
+    .ds-toolbar-search {
+      flex-basis: 100%;
+    }
+    .ds-toolbar-spacer {
+      display: none;
+    }
+    .ds-toolbar-scroll {
+      max-width: 100%;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .ds-toolbar-scroll::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  /* —— 机器格子 —— */
+
+  /*
+   * 格子之间的细线由每个格子自己的右边框和下边框画。
+   *
+   * 不能用"整体多出 1px + 容器 overflow:hidden 裁掉"那种省事做法：悬停时角上的
+   * 橙色小方块要探出格子一半，压在细线交点上，hidden 会把第一行、最左列的方块裁掉一半；
+   * 改成 visible 的话，多出来的那 1px 又会在窄屏上撑出横向滚动条。
+   * 所以按列数精确地去掉最右一列的右线（纸面边线就是它）和最后一行的下线（容器下边线就是它）。
+   * "最后一行"用 :nth-child(3n+1):nth-last-child(-n+3) 找到末行第一格，再用 ~ 带上同行其余几格，
+   * 最后一行没排满时也成立。
+   */
+  .ds-node-wrap {
+    container-type: inline-size;
+    border-bottom: 1px solid var(--ds-border);
+  }
+  .ds-node-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .ds-node-grid > :nth-child(3n) {
+    border-right-color: transparent;
+  }
+  .ds-node-grid > :nth-child(3n + 1):nth-last-child(-n + 3),
+  .ds-node-grid > :nth-child(3n + 1):nth-last-child(-n + 3) ~ * {
+    border-bottom-color: transparent;
+  }
+  @container (max-width: 980px) {
+    .ds-node-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    /* 先把三列时的去线规则还原，再按两列重新算 */
+    .ds-node-grid > :nth-child(3n) {
+      border-right-color: var(--ds-border);
+    }
+    .ds-node-grid > :nth-child(3n + 1):nth-last-child(-n + 3),
+    .ds-node-grid > :nth-child(3n + 1):nth-last-child(-n + 3) ~ * {
+      border-bottom-color: var(--ds-border);
+    }
+    .ds-node-grid > :nth-child(2n) {
+      border-right-color: transparent;
+    }
+    .ds-node-grid > :nth-child(2n + 1):nth-last-child(-n + 2),
+    .ds-node-grid > :nth-child(2n + 1):nth-last-child(-n + 2) ~ * {
+      border-bottom-color: transparent;
+    }
+  }
+  @container (max-width: 620px) {
+    .ds-node-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    /* 选择器写成 0-3-0，才压得过上面两列时那条同样 0-3-0 的"末行去下线" */
+    .ds-node-grid > :nth-child(n):nth-child(n) {
+      border-right-color: transparent;
+      border-bottom-color: var(--ds-border);
+    }
+    .ds-node-grid > :nth-child(n):last-child {
+      border-bottom-color: transparent;
+    }
+  }
+
+  .ds-node {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 24px clamp(16px, 2.4vw, 28px) 20px;
+    background: var(--ds-bg-surface);
+    color: inherit;
+    text-decoration: none;
+    border-right: 1px solid var(--ds-border);
+    border-bottom: 1px solid var(--ds-border);
+    transition: background-color 0.2s ease;
+  }
+
+  /*
+   * 悬停：格子底色暖一档，四个角上亮出橙色小方块，名字后面滑出箭头。
+   * 角标用两个伪元素各画上下两角 —— 方块要压在发丝线的交点上，所以向外探出一半。
+   * 只有能点进去的格子（a 标签）才有这些反馈。
+   */
+  .ds-node::before,
+  .ds-node::after {
+    content: '';
+    position: absolute;
+    left: -4px;
+    right: -3px;
+    height: 7px;
+    z-index: 2;
+    background:
+      linear-gradient(var(--color-brand), var(--color-brand)) left center / 7px 7px no-repeat,
+      linear-gradient(var(--color-brand), var(--color-brand)) right center / 7px 7px no-repeat;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    pointer-events: none;
+  }
+  .ds-node::before {
+    top: -4px;
+  }
+  .ds-node::after {
+    bottom: -3px;
+  }
+  a.ds-node:hover {
+    background: var(--ds-bg-subtle);
+    z-index: 1;
+  }
+  a.ds-node:hover::before,
+  a.ds-node:hover::after {
+    opacity: 1;
+  }
+  a.ds-node:focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: -2px;
+    border-radius: 0;
+  }
+
+  .ds-node-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .ds-node-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+    font-size: 16.5px;
+    line-height: 1.35;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    color: var(--ds-text-primary);
+  }
+  .ds-node-name > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ds-node-go {
+    flex-shrink: 0;
+    color: var(--ds-text-description);
+    opacity: 0;
+    transform: translateX(-4px);
+    transition:
+      opacity 0.2s ease,
+      transform 0.2s ease;
+  }
+  a.ds-node:hover .ds-node-go {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  .ds-node-meta {
+    margin: 6px 0 0 30px;
+    font-size: 13px;
+    color: var(--ds-text-description);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /*
+   * 指标区：四行同一套骨架 —— 标签 / 图形 / 读数。
+   * CPU 那一行的"图形"是趋势线，其余三行是占用条，读数落在同一列，扫一眼就能纵向比较。
+   */
+  .ds-node-metrics {
+    margin-top: 20px;
+  }
+  .ds-node-metric {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 18px;
+  }
+  .ds-node-metric + .ds-node-metric {
+    margin-top: 10px;
+  }
+  .ds-node-k {
+    width: 30px;
+    flex-shrink: 0;
+    font-size: 13px;
+    color: var(--ds-text-description);
+  }
+  .ds-node-v {
+    width: 44px;
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    text-align: right;
+    color: var(--ds-text-primary);
+  }
+  .ds-node-spark {
+    flex: 1;
+    min-width: 0;
+    height: 22px;
+    margin-block: -3px;
+    display: flex;
+    align-items: center;
+  }
+
+  .ds-node-sep {
+    height: 0;
+    margin: 18px 0 14px;
+    border-top: 1px dashed var(--ds-border);
+  }
+
+  .ds-node-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--ds-text-description);
+  }
+  .ds-node-rate {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .ds-node-rate b {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 400;
+    color: var(--ds-text-primary);
+  }
+
+  .ds-node-traffic {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    margin-top: 12px;
+    font-size: 13px;
+  }
+  .ds-node-unlimited {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--ds-text-disabled);
+  }
+
+  .ds-node-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    min-height: 24px;
+    margin-top: auto;
+    padding-top: 16px;
+  }
+  .ds-node-tags {
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    flex: 1;
+  }
+
+  .ds-node[data-status='offline'] .ds-node-body {
+    opacity: 0.4;
+    filter: grayscale(1);
+  }
+  .ds-node-offline {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 16px 0 -6px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: var(--ds-bg-sunken);
+    font-size: 12.5px;
+    color: var(--ds-text-secondary);
+  }
+
+  /* —— 列表视图 —— */
+
+  .ds-node-table {
+    --cols: minmax(220px, 1.7fr) minmax(110px, 0.9fr) repeat(3, minmax(96px, 1fr))
+      minmax(150px, 1.15fr) minmax(130px, 1fr);
+  }
+  .ds-node-table-head,
+  .ds-node-table-row {
+    display: grid;
+    grid-template-columns: var(--cols);
+    align-items: center;
+    gap: 16px;
+    padding: 0 clamp(16px, 3.4vw, 40px);
+  }
+  .ds-node-table-head {
+    height: 40px;
+    font-size: 12px;
+    color: var(--ds-text-description);
+    background: var(--ds-bg-subtle);
+    border-bottom: 1px solid var(--ds-border);
+  }
+  .ds-node-table-row {
+    min-height: 60px;
+    padding-block: 10px;
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px solid var(--ds-divider);
+    transition: background-color 0.12s ease;
+  }
+  .ds-node-table-row:last-child {
+    border-bottom: none;
+  }
+  a.ds-node-table-row:hover {
+    background: var(--ds-bg-subtle);
+  }
+  a.ds-node-table-row:focus-visible {
+    outline-offset: -2px;
+  }
+  .ds-node-table-row[data-status='offline'] > * {
+    opacity: 0.5;
+  }
+  .ds-node-table-row[data-status='offline'] > :first-child {
+    opacity: 1;
+  }
+  .ds-mini-meter {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ds-mini-meter > span:last-child {
+    width: 38px;
+    flex-shrink: 0;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  /* —— 事件流 —— */
+
+  .ds-events {
+    max-height: 380px;
+    overflow-y: auto;
+    margin: 0 calc(-1 * clamp(16px, 3.4vw, 40px)) -28px;
+  }
+  .ds-event {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 11px clamp(16px, 3.4vw, 40px);
+    border-top: 1px solid var(--ds-divider);
+    transition: background-color 0.12s ease;
+  }
+  .ds-event:hover {
+    background: var(--ds-bg-subtle);
+  }
+  .ds-event-icon {
+    display: flex;
+    color: var(--ds-text-disabled);
+  }
+  .ds-event[data-level='warn'] .ds-event-icon {
+    color: var(--color-warn);
+  }
+  .ds-event[data-level='error'] .ds-event-icon {
+    color: var(--color-danger);
+  }
+  .ds-event-msg {
+    min-width: 0;
+    font-size: 13.5px;
+    color: var(--ds-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ds-event-msg a {
+    color: var(--ds-text-primary);
+    font-weight: 500;
+    text-decoration: none;
+    background-image: linear-gradient(currentColor, currentColor);
+    background-size: 0 1px;
+    background-position: 0 100%;
+    background-repeat: no-repeat;
+    transition: background-size 0.25s ease;
+  }
+  .ds-event-msg a:hover {
+    background-size: 100% 1px;
+  }
+  .ds-event-time {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ds-text-description);
+    white-space: nowrap;
+  }
+}
+
+/* ————————————————————————————————————————————————————————
+   详情页
+   ———————————————————————————————————————————————————————— */
+
+@layer components {
+  .ds-detail-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .ds-detail-head .ds-page-title {
+    font-size: clamp(26px, 3vw, 36px);
+    letter-spacing: -0.03em;
+  }
+
+  .ds-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    border-bottom: 1px solid var(--ds-border);
+    overflow: hidden;
+  }
+  .ds-fact {
+    min-width: 0;
+    padding: 18px clamp(16px, 2.4vw, 28px);
+    box-shadow:
+      inset -1px 0 0 var(--ds-border),
+      inset 0 -1px 0 var(--ds-border);
+    margin: 0 -1px -1px 0;
+  }
+  .ds-fact-k {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--ds-text-description);
+    margin-bottom: 6px;
+  }
+  .ds-fact-v {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--ds-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ds-fact-sub {
+    font-size: 12.5px;
+    color: var(--ds-text-description);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ds-snap-rings,
+  .ds-snap-info {
+    display: grid;
+    border-bottom: 1px solid var(--ds-border);
+    overflow: hidden;
+  }
+  .ds-snap-rings {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .ds-snap-info {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  @media (max-width: 900px) {
+    .ds-snap-rings {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .ds-snap-info {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .ds-snap-cell {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+    padding: 20px clamp(16px, 2.4vw, 28px);
+    box-shadow:
+      inset -1px 0 0 var(--ds-border),
+      inset 0 -1px 0 var(--ds-border);
+    margin: 0 -1px -1px 0;
+  }
+  .ds-snap-cell-col {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .ds-kv {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+  }
+  .ds-kv > span:first-child {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--ds-text-description);
+  }
+  .ds-kv > span:last-child {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--ds-text-primary);
+    white-space: nowrap;
+  }
+
+  .ds-section-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  .ds-chart-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border: 1px solid var(--ds-border);
+    overflow: hidden;
+  }
+  .ds-chart-grid > * {
+    box-shadow:
+      inset -1px 0 0 var(--ds-border),
+      inset 0 -1px 0 var(--ds-border);
+    margin: 0 -1px -1px 0;
+  }
+  @media (max-width: 1000px) {
+    .ds-chart-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .ds-chart-card {
+    min-width: 0;
+    padding: 20px 22px 14px;
+  }
+  .ds-chart-grid > .ds-surface {
+    border: none;
+  }
+
+  .ds-legend {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .ds-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--ds-text-description);
+  }
+  .ds-legend i {
+    width: 12px;
+    height: 2px;
+    border-radius: 2px;
+  }
+}
+
+/* ————————————————————————————————————————————————————————
+   命令面板（⌘K）
+   ———————————————————————————————————————————————————————— */
+
+@layer components {
+  .ds-cmdk-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 150;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 12vh 16px 16px;
+    background: rgba(28, 22, 16, 0.28);
+    animation: ds-fade-in 0.14s ease;
+  }
+  html[data-theme='dark'] .ds-cmdk-backdrop {
+    background: rgba(0, 0, 0, 0.6);
+  }
+  .ds-cmdk {
+    display: flex;
+    flex-direction: column;
+    width: min(620px, 100%);
+    max-height: min(520px, 76vh);
+    background: var(--ds-bg-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 16px;
+    box-shadow: 0 30px 70px -18px rgba(30, 20, 10, 0.35);
+    overflow: hidden;
+    animation: ds-cmdk-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes ds-cmdk-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.985);
+    }
+  }
+  .ds-cmdk-input {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 56px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--ds-divider);
+    color: var(--ds-text-description);
+  }
+  .ds-cmdk-input input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--ds-text-primary);
+    font-family: inherit;
+    font-size: 15px;
+  }
+  .ds-cmdk-input input::placeholder {
+    color: var(--ds-text-disabled);
+  }
+  .ds-cmdk-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 6px;
+    outline: none;
+  }
+  .ds-cmdk-group {
+    padding: 10px 12px 4px;
+    font-size: 12px;
+    color: var(--ds-text-description);
+  }
+  .ds-cmdk-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 42px;
+    padding: 6px 12px;
+    border-radius: 10px;
+    color: var(--ds-text-secondary);
+    font-size: 13.5px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .ds-cmdk-item > svg {
+    color: var(--ds-text-description);
+    flex-shrink: 0;
+  }
+  .ds-cmdk-item[data-active] {
+    background: var(--ds-bg-subtle);
+    color: var(--ds-text-primary);
+  }
+  .ds-cmdk-item[data-active] .ds-cmdk-enter {
+    opacity: 1;
+  }
+  .ds-cmdk-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ds-cmdk-sub {
+    font-size: 12px;
+    color: var(--ds-text-description);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .ds-cmdk-enter {
+    opacity: 0;
+    color: var(--ds-text-description);
+    transition: opacity 0.12s ease;
+  }
+  .ds-cmdk-empty {
+    padding: 36px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--ds-text-description);
+  }
+  .ds-cmdk-foot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 40px;
+    padding: 0 16px;
+    border-top: 1px solid var(--ds-divider);
+    background: var(--ds-bg-subtle);
+    font-size: 12px;
+    color: var(--ds-text-description);
+  }
+  .ds-cmdk-foot > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  @media (max-width: 560px) {
+    .ds-cmdk-foot {
+      display: none;
+    }
   }
 }
 
@@ -1510,7 +2883,7 @@ body {
 @keyframes ds-pulse-ring {
   0% {
     box-shadow: 0 0 0 0 currentColor;
-    opacity: 0.6;
+    opacity: 0.5;
   }
   70% {
     box-shadow: 0 0 0 5px transparent;
@@ -1542,36 +2915,46 @@ body {
   }
 }
 
-@keyframes ds-shimmer {
+@keyframes ds-spark-reveal {
   from {
-    background-position: -200% 0;
+    clip-path: inset(0 100% 0 0);
   }
   to {
-    background-position: 200% 0;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes ds-theme-icon {
+  from {
+    opacity: 0;
+    transform: rotate(-90deg) scale(0.6);
   }
 }
 
 .ds-animate-in {
-  animation: ds-fade-up 0.42s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation: ds-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 .ds-fade-in {
   animation: ds-fade-in 0.3s ease backwards;
 }
 
-/*
- * 占位块。
- *
- * 原来是一道横扫的高光（shimmer），在深色底上会拖出一条灰白的脏痕，
- * 而且它自己太抢眼 —— 加载状态不该比内容还活跃。
- * 换成幅度很小的整体明暗呼吸：能看出"在加载"，但不吸引视线。
- */
+.ds-route {
+  animation: ds-route-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes ds-route-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* 占位块：幅度很小的明暗呼吸，加载状态不该比内容还活跃 */
 .ds-skeleton {
-  background: var(--ds-bg-sunken);
+  background: var(--ds-bg-track);
   border-radius: 6px;
   animation: ds-skeleton-breathe 1.8s ease-in-out infinite;
 }
-
 @keyframes ds-skeleton-breathe {
   0%,
   100% {
@@ -1590,24 +2973,12 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  .ds-lift:hover {
-    transform: none;
-  }
 }
 
 /* ————————————————————————————————————————————————————————
-   主题切换
+   主题切换：换色瞬间冻住所有过渡和动画，得到干净的瞬切
    ———————————————————————————————————————————————————————— */
 
-/*
- * 换色的瞬间把所有过渡和动画冻住。
- *
- * 页面上只有一部分元素带 transition（按钮 0.18s、卡片 0.22s、进度条 0.6s），
- * 不冻的话它们会各自用各自的速度变色，而没有 transition 的元素立刻就变了 ——
- * 这种不同步看起来就是"某些元素在闪"。全冻住反而得到干净的瞬切。
- *
- * themeBoot 是首帧的同一套处理：页面刚落地时不该有任何颜色渐入。
- */
 html[data-theme-switching] *,
 html[data-theme-switching] *::before,
 html[data-theme-switching] *::after,
@@ -1617,4 +2988,3 @@ html[data-theme-boot] *::after {
   transition: none !important;
   animation: none !important;
 }
-

@@ -4,6 +4,7 @@ import { useAsync } from '../lib/live';
 import { IconCheck, IconCopy, IconServer } from './icons';
 import { Modal } from './Modal';
 import { Alert, Checkbox, Field, Skeleton } from './ui';
+import { TextInput } from './Input';
 
 /**
  * 接入一台新机器。
@@ -107,8 +108,7 @@ export function EnrollDialog({ onClose }: Props) {
                 error={idError}
                 hint="唯一，之后不可更改。留空则用目标机器的主机名"
               >
-                <input
-                  className="ds-input"
+                <TextInput
                   placeholder="hkg-edge-01"
                   value={id}
                   onChange={(e) => setId(e.target.value)}
@@ -116,8 +116,7 @@ export function EnrollDialog({ onClose }: Props) {
                 />
               </Field>
               <Field label="显示名称" grow hint="面板上展示的名字，可留空">
-                <input
-                  className="ds-input"
+                <TextInput
                   placeholder="香港 · 边缘节点"
                   value={name}
                   onChange={(e) => setName(e.target.value)}

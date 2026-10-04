@@ -21,8 +21,8 @@ const PAD = { top: 14, right: 8, bottom: 22, left: 52 };
 export function TrafficBars({
   data,
   height = 200,
-  rxColor = '#00b96b',
-  txColor = '#4d6bfe',
+  rxColor = 'var(--chart-rx)',
+  txColor = 'var(--chart-tx)',
 }: Props) {
   const [ref, width] = useMeasure<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
@@ -36,7 +36,13 @@ export function TrafficBars({
   const slot = n > 0 ? innerW / n : 0;
   // 柱子之间留一点缝，但 30 根柱时缝要窄，否则柱子太细
   const gap = Math.min(4, Math.max(1, slot * 0.22));
-  const barW = Math.max(1.5, slot - gap);
+  /*
+   * 柱宽封顶 22px，居中放在自己那一格里。
+   * 周期刚开始只有三四天数据时，不封顶的话每根柱子有一百多像素宽，
+   * 像几块砖头摞在那儿；细柱子留出呼吸感，天数多了自然变密。
+   */
+  const barW = Math.min(22, Math.max(1.5, slot - gap));
+  const inset = (slot - barW) / 2;
 
   const yTicks = ticksOf(top, 4);
   const yOf = (v: number) => PAD.top + innerH - (v / top) * innerH;
@@ -84,7 +90,7 @@ export function TrafficBars({
                 y={yOf(t) + 3.5}
                 textAnchor="end"
                 className="tnum"
-                style={{ fontSize: 10.5, fill: 'var(--ds-text-description)' }}
+                style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', fill: 'var(--ds-text-description)' }}
               >
                 {bytes(t, 0)}
               </text>
@@ -92,12 +98,12 @@ export function TrafficBars({
           ))}
 
           {data.map((d, i) => {
-            const x = PAD.left + i * slot + gap / 2;
+            const x = PAD.left + i * slot + inset;
             const hRx = (d.rx / top) * innerH;
             const hTx = (d.tx / top) * innerH;
             const yTx = PAD.top + innerH - hRx - hTx;
             const active = hover === i;
-            const r = Math.min(2.5, barW / 2);
+            const r = Math.min(3, barW / 2);
             return (
               <g key={d.day} opacity={hover == null || active ? 1 : 0.45} style={{ transition: 'opacity .15s' }}>
                 {/* 上行在上，圆角只给顶部 */}
@@ -121,7 +127,7 @@ export function TrafficBars({
                 y={height - 6}
                 textAnchor="middle"
                 className="tnum"
-                style={{ fontSize: 10, fill: 'var(--ds-text-description)' }}
+                style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', fill: 'var(--ds-text-description)' }}
               >
                 {dayLabel(d.day)}
               </text>

@@ -3,6 +3,7 @@ import { useAuth } from '../lib/auth';
 import { IconCheck, IconGlobe, IconShield } from './icons';
 import { Modal } from './Modal';
 import { Alert, Field } from './ui';
+import { PasswordInput, TextInput } from './Input';
 
 /**
  * 登录
@@ -122,9 +123,8 @@ export function LoginDialog({ onClose, redirect }: Props) {
         {error && <Alert tone="danger" title="登录失败">{error}</Alert>}
 
         <Field label="用户名">
-          <input
+          <TextInput
             ref={inputRef}
-            className="ds-input"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
@@ -134,9 +134,7 @@ export function LoginDialog({ onClose, redirect }: Props) {
         </Field>
 
         <Field label="密码">
-          <input
-            className="ds-input"
-            type="password"
+          <PasswordInput
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
@@ -188,8 +186,7 @@ export function LoginDialog({ onClose, redirect }: Props) {
             }}
           >
             <Field label="留个称呼" hint="管理员能看到访客的到访记录，留个名字方便对方认出你">
-              <input
-                className="ds-input"
+              <TextInput
                 value={guestLabel}
                 onChange={(e) => setGuestLabel(e.target.value)}
                 placeholder="可留空"

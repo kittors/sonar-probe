@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, ApiError, type IdentityInfo } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { ago } from '../lib/format';
-import { IconCheck, IconGlobe, IconShield } from '../components/icons';
+import { IconCheck, IconChevronRight, IconGlobe, IconShield } from '../components/icons';
 import { OAuthSetupDialog } from '../components/Shell';
-import { Alert, Field, SectionCard } from '../components/ui';
+import { Alert, Field, PageHeader, SectionCard } from '../components/ui';
+import { Tooltip } from '../components/Tooltip';
+import { PasswordInput, TextInput } from '../components/Input';
 
 /**
  * 个人设置
@@ -21,19 +24,39 @@ export function Profile() {
 
   if (!me) return null;
 
+  const header = (
+    <PageHeader
+      breadcrumb={
+        <nav className="ds-breadcrumb" aria-label="当前位置">
+          <Link to="/">机器概览</Link>
+          <IconChevronRight size={12} />
+          <span aria-current="page">个人设置</span>
+        </nav>
+      }
+      title="个人设置"
+      description={`${me.name} · ${me.roleLabel}。改自己的资料、密码和登录方式不需要任何权限。`}
+    />
+  );
+
   if (me.kind === 'guest') {
     return (
-      <SectionCard title="个人设置">
+      <div className="ds-narrow">
+        {header}
         <Alert tone="info" title="访客身份没有可维护的凭据">
           访客是一次性身份，关掉浏览器就结束了，没有密码也不能绑定 GitHub。
           需要长期访问的话，请管理员给你开一个正式账号。
         </Alert>
-      </SectionCard>
+      </div>
     );
   }
 
+  /*
+   * 表单页收窄到 760px。之前三个输入框拉满整屏宽，一个"邮箱"框有六七百像素长，
+   * 视线要横跨整个屏幕去找下一格。
+   */
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div className="ds-narrow" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{ marginBottom: -4 }}>{header}</div>
       {me.mustChangePassword && (
         <Alert tone="warn" title="请先修改初始密码">
           你现在用的是系统生成或管理员设置的密码，它经过了第二个人的手（或者写在服务器的文件里）。
@@ -90,13 +113,13 @@ function ProfileCard() {
       {error && <Alert tone="danger" title="保存失败">{error}</Alert>}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: error ? 12 : 0 }}>
         <Field label="用户名" grow hint="登录用，创建后不可更改">
-          <input className="ds-input" value={me?.username || '—'} disabled />
+          <TextInput value={me?.username || '—'} disabled />
         </Field>
         <Field label="显示名称" grow>
-          <input className="ds-input" value={name} onChange={(e) => setName(e.target.value)} />
+          <TextInput value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="邮箱" grow hint="仅用于展示，不会发信">
-          <input className="ds-input" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <TextInput value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
@@ -165,9 +188,7 @@ function PasswordCard({ onDone }: { onDone: () => void }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: error || done ? 12 : 0 }}>
         {hasPassword && (
           <Field label="当前密码">
-            <input
-              className="ds-input"
-              type="password"
+            <PasswordInput
               value={current}
               onChange={(e) => setCurrent(e.target.value)}
               autoComplete="current-password"
@@ -176,18 +197,14 @@ function PasswordCard({ onDone }: { onDone: () => void }) {
         )}
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <Field label="新密码" grow hint="至少 10 位，包含两类以上字符，且不能含用户名">
-            <input
-              className="ds-input"
-              type="password"
+            <PasswordInput
               value={next}
               onChange={(e) => setNext(e.target.value)}
               autoComplete="new-password"
             />
           </Field>
           <Field label="确认新密码" grow error={mismatch ? '两次输入不一致' : ''}>
-            <input
-              className="ds-input"
-              type="password"
+            <PasswordInput
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               autoComplete="new-password"
@@ -298,14 +315,21 @@ function IdentitiesCard({
                 {i.lastUsedAt > 0 && ` · 最近使用 ${ago(i.lastUsedAt)}`}
               </div>
             </div>
-            <button
-              className="ds-btn ds-btn-ghost ds-btn-s"
-              onClick={() => void unbind(i.provider)}
-              disabled={busy === i.provider || only}
-              title={only ? '这是唯一的登录方式，解绑后就再也登不进来了' : undefined}
-            >
-              解绑
-            </button>
+            {/*
+              提示挂在外面那层 span 上：按钮禁用时浏览器不给它派发鼠标事件，
+              直接挂在按钮上的提示永远出不来 —— 而禁用的时候恰恰最需要说明为什么。
+            */}
+            <Tooltip content={only ? '这是唯一的登录方式，解绑后就再也登不进来了' : ''}>
+              <span style={{ display: 'inline-flex' }}>
+                <button
+                  className="ds-btn ds-btn-ghost ds-btn-s"
+                  onClick={() => void unbind(i.provider)}
+                  disabled={busy === i.provider || only}
+                >
+                  解绑
+                </button>
+              </span>
+            </Tooltip>
           </div>
         ))}
       </div>

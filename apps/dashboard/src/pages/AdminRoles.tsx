@@ -7,6 +7,8 @@ import { type Capability, type RoleInfo } from '../lib/permissions';
 import { Modal } from '../components/Modal';
 import { Alert, Chip, Field, RawCheckbox, SectionCard, Skeleton } from '../components/ui';
 import { IconShield, IconTrash } from '../components/icons';
+import { TextInput } from '../components/Input';
+import { Tooltip } from '../components/Tooltip';
 
 /**
  * 角色管理
@@ -142,14 +144,16 @@ export function AdminRoles() {
                       {editable && !r.locked ? '编辑' : '查看'}
                     </button>
                     {editable && !r.system && (
-                      <button
-                        className="ds-btn ds-btn-ghost ds-btn-s"
-                        style={{ marginLeft: 5, color: 'var(--color-danger)' }}
-                        onClick={() => setConfirmDelete(r)}
-                        title={r.userCount > 0 ? '还有用户挂在这个角色下' : '删除角色'}
-                      >
-                        <IconTrash size={12} />
-                      </button>
+                      <Tooltip content={r.userCount > 0 ? '还有用户挂在这个角色下' : '删除角色'}>
+                        <button
+                          className="ds-btn ds-btn-ghost ds-btn-s"
+                          style={{ marginLeft: 5, color: 'var(--color-danger)' }}
+                          onClick={() => setConfirmDelete(r)}
+                          aria-label="删除角色"
+                        >
+                          <IconTrash size={12} />
+                        </button>
+                      </Tooltip>
                     )}
                   </td>
                 </tr>
@@ -350,8 +354,7 @@ function RoleEditor({
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           {isNew && (
             <Field label="标识" grow error={idError} hint="创建后不可更改，出现在接口和审计里">
-              <input
-                className="ds-input"
+              <TextInput
                 value={id}
                 onChange={(e) => setId(e.target.value)}
                 placeholder="auditor"
@@ -360,8 +363,7 @@ function RoleEditor({
             </Field>
           )}
           <Field label="名称" grow>
-            <input
-              className="ds-input"
+            <TextInput
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="审计员"
@@ -370,8 +372,7 @@ function RoleEditor({
             />
           </Field>
           <Field label="说明" grow hint="指派角色时会显示给操作者看">
-            <input
-              className="ds-input"
+            <TextInput
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="只能看审计日志，不能改任何东西"
