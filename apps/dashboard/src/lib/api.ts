@@ -69,7 +69,15 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     // 会话是 httpOnly cookie，跨端口开发时不带上就永远是未登录
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    /*
+     * 只在真有请求体时才声明 JSON。
+     *
+     * 没有请求体却带着 Content-Type: application/json，Fastify 会在鉴权之前就以
+     * 400（FST_ERR_CTP_EMPTY_JSON_BODY）拒掉。解除封禁、删用户、删角色、踢下线、
+     * 审批授权这些不带请求体的 DELETE / POST 曾因此全部失效，界面上只有一句
+     * "Bad Request" —— 症状离原因很远，而原因只是多带了一个头。
+     */
+    headers: init?.body != null ? { 'Content-Type': 'application/json', ...init.headers } : init?.headers,
   });
   const text = await res.text();
   const body = text ? JSON.parse(text) : null;
