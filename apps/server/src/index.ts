@@ -174,6 +174,20 @@ import {
   type RuleCompare,
   type RuleScope,
 } from './traffic-rules.js';
+import {
+  NodeDeleteError,
+  deleteNode,
+  deletionImpact,
+  type DeletionImpact,
+  type DeletionResult,
+} from './node-delete.js';
+import {
+  NodeDeletedError,
+  allowReenroll,
+  deletedNode,
+  listDeletedNodes,
+  noteRejectedAttempt,
+} from './tombstones.js';
 import { ensureSetupToken, setupTokenValid, writeOAuthCredentials } from './setup.js';
 import type { BlockMode, NodeState, PublicSettings, ServerMessage } from './types.js';
 
@@ -1037,6 +1051,121 @@ app.patch<{ Params: { id: string }; Body: NodePatch }>(
     broadcast((caps) => ({ type: 'tick', nodes: sanitizeNodes(nodes, caps), ts: Date.now() }));
 
     return sanitizeNode(updated, req.auth!.caps);
+  },
+);
+
+/**
+ * 删除前的影响评估：会失去什么，会留下什么。
+ *
+ * 封禁目标和授权明细按各自的查看权限裁剪 —— 有删除权限不等于该看到全机队的
+ * 密钥分布（ssh:audit）或被封的地址（block:view），删除按钮不该顺手打开另外两扇门。
+ * 没权限的只拿到条数，那已经足够让人知道"删之前得找人看一眼"。
+ */
+function redactImpact(impact: DeletionImpact, caps: Set<Capability>): DeletionImpact {
+  return {
+    ...impact,
+    activeBlocks: caps.has('block:view')
+      ? impact.activeBlocks
+      : impact.activeBlocks.map((b) => ({ ...b, target: '' })),
+    liveGrants: caps.has('ssh:audit')
+      ? impact.liveGrants
+      : impact.liveGrants.map((g) => ({ ...g, ownerName: '', keyLabel: '', fingerprint: '' })),
+  };
+}
+
+app.get<{ Params: { id: string } }>(
+  '/api/nodes/:id/deletion',
+  { preHandler: requireCap('node:delete') },
+  async (req, reply) => {
+    const impact = deletionImpact(req.params.id);
+    if (!impact) return reply.code(404).send({ error: '机器不存在' });
+    return redactImpact(impact, req.auth!.caps);
+  },
+);
+
+/**
+ * 删除记进审计的那一行。
+ *
+ * 残留授权的指纹、归属、账号一项都不能省：机器删了、授权记录跟着清了之后，
+ * 这一行是唯一还能回答"那台机器上那把钥匙是谁的、从哪来"的地方。
+ */
+function deletionAuditDetail({ impact, rows, tombstoned }: DeletionResult): string {
+  const cleared = Object.entries(rows)
+    .filter(([, n]) => n > 0)
+    .map(([table, n]) => `${table}=${n}`)
+    .join(' ');
+  const parts = [
+    `「${impact.name}」`,
+    impact.source === 'sim' ? '模拟机器' : '',
+    tombstoned ? '已拒绝其采集端再次接入' : '',
+    impact.agentActive ? '删除时采集端仍在上报' : '',
+    `清除 ${cleared || '无历史数据'}`,
+  ];
+  if (impact.activeBlocks.length > 0) {
+    parts.push(
+      `残留封禁 ${impact.activeBlocks.length} 条：` +
+        impact.activeBlocks.map((b) => `${b.target}${b.expiresAt ? '' : '（永久）'}`).join(', '),
+    );
+  }
+  if (impact.liveGrants.length > 0) {
+    parts.push(
+      `残留授权 ${impact.liveGrants.length} 条：` +
+        impact.liveGrants
+          .map((g) => `${g.ownerName || '?'}「${g.keyLabel}」${g.fingerprint} → ${g.remoteUser}（${g.state}）`)
+          .join('；'),
+    );
+  }
+  return parts.filter(Boolean).join(' · ');
+}
+
+app.delete<{ Params: { id: string }; Body: { confirm?: string; acknowledgeGrants?: boolean } }>(
+  '/api/nodes/:id',
+  { preHandler: requireCap('node:delete') },
+  async (req, reply) => {
+    const id = req.params.id;
+
+    /*
+     * 请求体要回显目标标识。
+     *
+     * 删除抹掉的是这台机器的全部历史，没有回收站。URL 拼错一个字符、或者一段
+     * 脚本把变量拼成了 /api/nodes/undefined，都不该有机会走到下面 ——
+     * 让调用方把"我要删的就是它"再说一遍，比事后从备份里捞数据便宜得多。
+     */
+    if (req.body?.confirm !== id) {
+      return reply.code(400).send({ error: '确认标识和要删除的机器对不上' });
+    }
+
+    const operator = req.auth!.user.login || req.auth!.user.name;
+    let result: DeletionResult;
+    try {
+      result = deleteNode(id, {
+        operator,
+        acknowledgeGrants: req.body?.acknowledgeGrants === true,
+      });
+    } catch (err) {
+      if (err instanceof NodeDeleteError) return reply.code(err.status).send({ error: err.message });
+      throw err;
+    }
+
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'node.delete',
+      target: id,
+      detail: deletionAuditDetail(result),
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+
+    // 机器已经不在了，事件挂在它名下只会让前端去找一台找不到的机器
+    const ev = logEvent(null, 'warn', 'node', `${operator} 删除了机器「${result.impact.name}」`);
+    broadcast(() => ({ type: 'event', event: ev }));
+
+    // 立刻推新列表：别人正开着的概览和这台机器的详情页都要马上知道它没了
+    const nodes = listNodeStates();
+    broadcast((caps) => ({ type: 'tick', nodes: sanitizeNodes(nodes, caps), ts: Date.now() }));
+
+    return { ok: true, tombstoned: result.tombstoned };
   },
 );
 
@@ -2365,8 +2494,42 @@ app.get('/api/admin/enroll', { preHandler: requireCap('node:manage') }, async (r
     token,
     /** 已经接入的 id，前端用来提示"这个名字已经被占了" */
     existingIds: listNodeStates().map((n) => n.id),
+    /**
+     * 删除过的标识。拿它们去装 agent 会被面板拒绝，
+     * 前端要在人复制安装命令之前就说清楚，而不是让他到机器上对着 410 猜。
+     */
+    deleted: listDeletedNodes(),
   };
 });
+
+/**
+ * 允许一个删除过的标识重新接入。
+ *
+ * 和接入新机器同一道权限：效果就是"让一台机器出现在面板上"。
+ * 只撤掉拦截，不恢复任何数据 —— 删除时它们已经清掉了。
+ */
+app.delete<{ Params: { id: string } }>(
+  '/api/admin/enroll/deleted/:id',
+  { preHandler: requireCap('node:manage') },
+  async (req, reply) => {
+    const tomb = allowReenroll(req.params.id);
+    if (!tomb) return reply.code(404).send({ error: '这个标识不在已删除列表里' });
+
+    const operator = req.auth!.user.login || req.auth!.user.name;
+    audit({
+      userId: req.auth!.user.id,
+      sessionId: req.auth!.sessionId,
+      action: 'node.reenroll',
+      target: tomb.id,
+      detail: `「${tomb.name}」，原由 ${tomb.deletedBy || '?'} 删除`,
+      ip: ip(req),
+      userAgent: ua(req),
+    });
+    const ev = logEvent(null, 'info', 'agent', `${operator} 允许已删除的标识 ${tomb.id} 重新接入`);
+    broadcast(() => ({ type: 'event', event: ev }));
+    return { ok: true };
+  },
+);
 
 app.get('/api/admin/online', { preHandler: requireCap('audit:view') }, async () =>
   listOnline().map((o) => ({
@@ -2498,6 +2661,30 @@ app.post(
 // 没配 SONAR_AGENT_TOKEN 时整个通道关闭 —— 否则谁都能往面板里灌数据。
 // ————————————————————————————————————————————————————————
 
+/**
+ * 已删除机器的采集端还在敲门。
+ *
+ * 回 410 而不是 400/404：Gone 的意思是"它存在过、被有意移除了、不会自己回来"。
+ * 新版 agent 认这个码，收到后停掉两秒一次的上报，改成每十分钟问一次
+ * 是否被允许重新接入；老版本会照旧重试，但每次只是两次主键查询。
+ *
+ * 往事件流里提醒一声，但一天最多一次 —— 删了机器却忘了停 agent 很常见，
+ * 那台机器可能还在按小时计费。
+ */
+function rejectDeleted(reply: FastifyReply, err: NodeDeletedError) {
+  const tomb = err.tombstone;
+  if (noteRejectedAttempt(tomb.id)) {
+    const ev = logEvent(
+      null,
+      'warn',
+      'agent',
+      `已删除的机器「${tomb.name || tomb.id}」仍在上报，已拒绝。不再需要监控的话，到那台机器上停用采集端`,
+    );
+    broadcast(() => ({ type: 'event', event: ev }));
+  }
+  return reply.code(410).send({ error: err.message, deleted: true });
+}
+
 app.post<{ Body: { token?: string; node?: AgentNodeInfo } }>(
   '/api/agent/register',
   async (req, reply) => {
@@ -2529,6 +2716,7 @@ app.post<{ Body: { token?: string; node?: AgentNodeInfo } }>(
       const secret = issueNodeSecret(node.id);
       return { ok: true, created, secret };
     } catch (err) {
+      if (err instanceof NodeDeletedError) return rejectDeleted(reply, err);
       return reply.code(409).send({ error: err instanceof Error ? err.message : '注册失败' });
     }
   },
@@ -2552,6 +2740,7 @@ app.post<{ Body: { token?: string } & AgentReport }>('/api/agent/report', async 
     // SSH 实况是可选的：老 agent 不带这一段，带了就顺手对一次账
     if (req.body.ssh) ingestSshFacts(req.body.nodeId, req.body.ssh);
   } catch (err) {
+    if (err instanceof NodeDeletedError) return rejectDeleted(reply, err);
     return reply.code(400).send({ error: err instanceof Error ? err.message : '写入失败' });
   }
 
@@ -2589,6 +2778,10 @@ app.post<{ Body: { token?: string; secret?: string; nodeId?: string; result?: Ac
       return reply.code(401).send({ error: 'agent token 不正确' });
     }
     const nodeId = String(req.body?.nodeId ?? '');
+    // 先于密钥校验：被删的机器密钥也跟着没了，不先判的话它会收到一句
+    // "还没有完成密钥升级"，把排查的人引到完全错误的方向上
+    const tomb = deletedNode(nodeId);
+    if (tomb) return rejectDeleted(reply, new NodeDeletedError(tomb));
     if (!nodeSecretValid(nodeId, req.body?.secret)) {
       return reply.code(403).send({ error: '这台机器还没有完成密钥升级，无法回执' });
     }

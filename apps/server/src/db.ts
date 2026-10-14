@@ -192,7 +192,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github ON users(github_id) WHERE git
  * 才会冒出来的需求，不该是发版才能满足的事。
  *
  * 但**能力点仍然是代码常量**，只有角色到能力的映射挪进了库。原因是能力点
- * 一一对应路由上的 requireCap：凭空造一个 'node:destroy' 存进来，没有任何
+ * 一一对应路由上的 requireCap：凭空造一个 'node:reboot' 存进来，没有任何
  * 代码会读它，它只是一行让人误以为有效的配置。
  *
  * id 直接沿用旧的角色字符串（admin/operator/viewer/guest/anonymous），
@@ -452,7 +452,55 @@ CREATE TABLE IF NOT EXISTS settings (
   value      TEXT NOT NULL,
   updated_at INTEGER NOT NULL DEFAULT 0
 );
+
+/*
+ * 已删除机器的墓碑。
+ *
+ * agent 的注册是"没有就新建"。只删 nodes 那一行的话，那台机器上的 agent
+ * 下次重启就会把它原样建回来 —— 历史清零、换个新的接入时间，看起来就像
+ * 删除没生效。所以删除时在这里留一条，注册和上报一律拒绝。见 tombstones.ts。
+ */
+CREATE TABLE IF NOT EXISTS deleted_nodes (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL DEFAULT '',
+  deleted_at   INTEGER NOT NULL,
+  deleted_by   TEXT NOT NULL DEFAULT '',
+  -- 删除之后那台机器的采集端最近一次来敲门的时刻。0 = 一次都没回来过
+  last_attempt INTEGER NOT NULL DEFAULT 0,
+  -- 上一次为此往事件流里发提醒的时刻，用来节流
+  warned_at    INTEGER NOT NULL DEFAULT 0
+);
 `);
+
+/**
+ * 跟着机器走的数据：删除一台机器时，这些表里属于它的行全部清掉。
+ *
+ * 新加一张带 node_id 的表，必须在这里和 NODE_HISTORY_TABLES 之间二选一 ——
+ * node-delete.test.ts 会扫一遍实际的库结构，漏登记的表会让测试失败。
+ * 少清一张表的后果不是报错，而是一批永远查不到主人、也永远不会被清理的行。
+ */
+export const NODE_OWNED_TABLES = [
+  'metrics',
+  'daily_traffic',
+  'service_traffic',
+  'peer_traffic',
+  'block_rules',
+  'agent_commands',
+  'ssh_grants',
+  'ssh_endpoints',
+  'ssh_observed_keys',
+  // 只删挂在这台机器上的；node_id 为空的全局规则不受影响
+  'traffic_rules',
+] as const;
+
+/**
+ * 删除机器时保留的表。
+ *
+ * 事件流记的是"发生过什么"，机器没了历史也不该跟着改写 —— 尤其是它最后
+ * 那几条离线、告警事件，往往正是当初决定删它的理由。前端渲染事件时找不到
+ * 对应机器就只显示文字、不出链接，不会产生死链。
+ */
+export const NODE_HISTORY_TABLES = ['events'] as const;
 
 /**
  * 增量加列。
@@ -555,13 +603,8 @@ export function purgeSimulatedData(): { nodes: number; rows: number } {
 
   db.exec('BEGIN');
   try {
-    for (const table of [
-      'metrics',
-      'daily_traffic',
-      'service_traffic',
-      'peer_traffic',
-      'block_rules',
-    ]) {
+    // 和删除单台机器用同一份清单。各维护一份的话，迟早有一边漏掉新加的表
+    for (const table of NODE_OWNED_TABLES) {
       const res = db
         .prepare(`DELETE FROM ${table} WHERE node_id IN (${placeholders})`)
         .run(...(simIds as never[]));

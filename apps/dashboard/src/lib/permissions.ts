@@ -23,6 +23,7 @@ export const CAPABILITIES = {
   'node:full_ip': { label: '查看未打码的 IP 地址', group: '浏览', risk: 'medium' },
   'node:hardware': { label: '查看硬件与系统信息', group: '浏览', risk: 'low' },
   'node:manage': { label: '编辑机器信息（价格、配额、到期）', group: '浏览', risk: 'medium' },
+  'node:delete': { label: '删除机器（连同全部历史数据）', group: '浏览', risk: 'high' },
 
   // —— 流量
   'traffic:daily': { label: '查看每日流量', group: '流量', risk: 'low' },

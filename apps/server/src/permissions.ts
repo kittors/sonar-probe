@@ -13,7 +13,7 @@
  *
  * 角色和它的能力集在数据库里（roles 表，见 roles.ts），运行期可增删改；
  * 能力点则必须留在代码里，因为每一个都一一对应路由上的 requireCap。
- * 让人在界面上凭空造一个 'node:destroy' 存进库，不会有任何代码去读它 ——
+ * 让人在界面上凭空造一个 'node:reboot' 存进库，不会有任何代码去读它 ——
  * 那不是一项权限，只是一行让人误以为生效了的配置。
  *
  * 判断标准：**新增能力点必然伴随新增代码，所以它属于代码。**
@@ -26,6 +26,14 @@ export const CAPABILITIES = {
   'node:full_ip': { label: '查看未打码的 IP 地址', group: '浏览', risk: 'medium' },
   'node:hardware': { label: '查看硬件与系统信息', group: '浏览', risk: 'low' },
   'node:manage': { label: '编辑机器信息（价格、配额、到期）', group: '浏览', risk: 'medium' },
+  /*
+   * 删除不并进 node:manage。
+   *
+   * 编辑改错了能改回来，删除抹掉的是这台机器的全部历史 —— 流量账本、指标、
+   * 归因、封禁与 SSH 授权记录，没有回收站。所以运维的出厂能力集里不带它，
+   * 要给得由管理员显式授予。
+   */
+  'node:delete': { label: '删除机器（连同全部历史数据）', group: '浏览', risk: 'high' },
 
   // —— 流量
   'traffic:daily': { label: '查看每日流量', group: '流量', risk: 'low' },

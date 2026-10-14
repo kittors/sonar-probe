@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
+import { ago } from '../lib/format';
 import { useAsync } from '../lib/live';
 import { IconCheck, IconCopy, IconServer } from './icons';
 import { Modal } from './Modal';
@@ -30,6 +31,10 @@ export function EnrollDialog({ onClose }: Props) {
     () => new Set(info.data?.existingIds ?? []),
     [info.data],
   );
+  const deleted = useMemo(
+    () => new Map((info.data?.deleted ?? []).map((d) => [d.id, d])),
+    [info.data],
+  );
 
   const trimmedId = id.trim();
   const idError = !trimmedId
@@ -40,9 +45,37 @@ export function EnrollDialog({ onClose }: Props) {
         ? '这个标识已经被占用了'
         : '';
 
+  /*
+   * 删除过的标识。
+   *
+   * 拿它装上的采集端会被面板拒绝（410）。不在这里拦住，人会把命令贴到机器上、
+   * 看着安装脚本跑完、再对着一台迟迟不出现的机器去翻日志。
+   */
+  const tomb = deleted.get(trimmedId);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreErr, setRestoreErr] = useState<string | null>(null);
+  const [restored, setRestored] = useState<string | null>(null);
+
+  async function restore() {
+    if (!tomb) return;
+    setRestoring(true);
+    setRestoreErr(null);
+    try {
+      await api.allowReenroll(tomb.id);
+      setRestored(tomb.id);
+      info.reload();
+    } catch (e) {
+      setRestoreErr(e instanceof ApiError ? e.message : '操作失败');
+    } finally {
+      setRestoring(false);
+    }
+  }
+
   const command = useMemo(() => {
     const d = info.data;
     if (!d?.ready || !d.panelUrl) return '';
+    // 解除之前不给命令：给了也装不上，只会让人去机器上白跑一趟
+    if (tomb) return '';
     const parts = [
       `curl -fsSL ${d.panelUrl}/install-agent.sh | sudo bash -s --`,
       `  --panel ${d.panelUrl}`,
@@ -54,7 +87,7 @@ export function EnrollDialog({ onClose }: Props) {
     if (!ensureCt) parts.push('  --no-conntrack');
     if (enforce) parts.push('  --enforce');
     return parts.join(' \\\n');
-  }, [info.data, trimmedId, name, enforce, ensureCt]);
+  }, [info.data, trimmedId, name, enforce, ensureCt, tomb]);
 
   useEffect(() => {
     if (!copied) return;
@@ -124,6 +157,36 @@ export function EnrollDialog({ onClose }: Props) {
               </Field>
             </div>
 
+            {tomb && (
+              <Alert tone="warn" title="这个标识删除过">
+                「{tomb.name || tomb.id}」在 {new Date(tomb.deletedAt).toLocaleDateString('zh-CN')} 被{' '}
+                {tomb.deletedBy || '管理员'} 从面板删除，用它装上的采集端会被拒绝。
+                {tomb.lastAttempt > 0 && `那台机器上的采集端仍在尝试上报（最近一次在 ${ago(tomb.lastAttempt)}）。`}
+                确定要让它回来，先允许它重新接入 —— 之前的历史数据已经随删除清掉了，接入后从零开始累计。
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    className="ds-btn ds-btn-ghost ds-btn-s"
+                    onClick={() => void restore()}
+                    disabled={restoring}
+                  >
+                    {restoring ? '处理中…' : '允许重新接入'}
+                  </button>
+                </div>
+                {restoreErr && <div style={{ marginTop: 8, color: 'var(--color-danger)' }}>{restoreErr}</div>}
+              </Alert>
+            )}
+
+            {/*
+              老版本采集端只在启动时注册一次，解除之后它不会自己回来 —— 得重启一下。
+              新版本收到 410 之后每十分钟会再问一次，不重启也会回来，但"重启"对两者都成立。
+            */}
+            {!tomb && restored && restored === trimmedId && (
+              <Alert tone="success" title={`已允许 ${restored} 重新接入`}>
+                那台机器上的采集端如果还在，执行 <code>systemctl restart sonar-agent</code> 它就会回到面板；
+                重装的话照常用下面这条命令。
+              </Alert>
+            )}
+
             <div>
               <div
                 style={{
@@ -135,12 +198,14 @@ export function EnrollDialog({ onClose }: Props) {
               >
                 <span className="ds-text-caption text-ds-description">在目标机器上执行</span>
                 <span style={{ flex: 1 }} />
-                <button className="ds-btn ds-btn-ghost ds-btn-s" onClick={copy}>
+                <button className="ds-btn ds-btn-ghost ds-btn-s" onClick={copy} disabled={!command}>
                   {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
                   {copied ? '已复制' : '复制'}
                 </button>
               </div>
-              <pre className="ds-enroll-cmd">{command}</pre>
+              <pre className="ds-enroll-cmd">
+                {command || (tomb ? '# 先允许这个标识重新接入，再生成安装命令' : '')}
+              </pre>
               {/* token 就在这条命令里，得让人意识到它不能随手贴到公开的地方 */}
               <p className="ds-text-caption text-ds-description" style={{ margin: '7px 0 0' }}>
                 这条命令里含上报凭据，别贴到公开的地方。

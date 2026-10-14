@@ -2,8 +2,10 @@ import type {
   BlockPreflight,
   BlockRule,
   DailyTraffic,
+  DeletedNode,
   EventLog,
   Metric,
+  NodeDeletionImpact,
   NodeState,
   PeerTraffic,
   ServiceTraffic,
@@ -116,6 +118,23 @@ export const api = {
       tags?: string[];
     },
   ) => req<NodeState>(`/api/nodes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  /** 删除前看一眼：会失去哪些历史、会在机器上留下什么 */
+  deletionImpact: (id: string) =>
+    req<NodeDeletionImpact>(`/api/nodes/${encodeURIComponent(id)}/deletion`),
+
+  /**
+   * 删除机器。
+   *
+   * confirm 必须等于 id —— 服务端会再核对一遍，URL 拼错或脚本拼出个 undefined
+   * 都走不到真正的删除。acknowledgeGrants 是"我知道机器上可能还留着面板装的公钥"，
+   * 有残留授权时不带它服务端会拒绝。
+   */
+  deleteNode: (id: string, body: { confirm: string; acknowledgeGrants?: boolean }) =>
+    req<{ ok: boolean; tombstoned: boolean }>(`/api/nodes/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      body: JSON.stringify(body),
+    }),
 
   metrics: (id: string, range: '15m' | '1h' | '6h' | '24h') =>
     req<Metric[]>(`/api/nodes/${id}/metrics?range=${range}`),
@@ -248,9 +267,19 @@ export const api = {
 
   /** 接入新机器所需的信息。含 agent token，需要 node:manage 权限 */
   enrollInfo: () =>
-    req<{ ready: boolean; panelUrl: string; token: string; existingIds: string[] }>(
-      '/api/admin/enroll',
-    ),
+    req<{
+      ready: boolean;
+      panelUrl: string;
+      token: string;
+      existingIds: string[];
+      deleted: DeletedNode[];
+    }>('/api/admin/enroll'),
+
+  /** 允许一个删除过的标识重新接入。只撤掉拦截，不恢复任何数据 */
+  allowReenroll: (id: string) =>
+    req<{ ok: boolean }>(`/api/admin/enroll/deleted/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 
   online: () => req<OnlineEntry[]>('/api/admin/online'),
 

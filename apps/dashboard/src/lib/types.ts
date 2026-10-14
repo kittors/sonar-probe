@@ -285,6 +285,52 @@ export interface SshPreflightResult {
   commands: string[];
 }
 
+/**
+ * 删除一台机器之前的影响评估。
+ *
+ * 封禁目标和授权明细按查看权限裁剪：没有 block:view / ssh:audit 的人
+ * 拿到的那几个字段是空串，条数照常 —— 渲染时用 can() 决定显示明细还是只报数。
+ */
+export interface NodeDeletionImpact {
+  id: string;
+  name: string;
+  source: 'agent' | 'sim';
+  createdAt: number;
+  lastReport: number;
+  /** 采集端此刻还在上报，删掉之后它会一直被拒绝，得有人去机器上停掉 */
+  agentActive: boolean;
+  history: {
+    metricSamples: number;
+    trafficDays: number;
+    firstTrafficDay: string | null;
+    attributionRows: number;
+    trafficRules: number;
+    pendingCommands: number;
+  };
+  /** 留在机器防火墙里、删除之后面板再也解不开的封禁。expiresAt 为 0 表示永久 */
+  activeBlocks: Array<{ id: string; target: string; expiresAt: number }>;
+  /** 可能还留在机器上的公钥 */
+  liveGrants: Array<{
+    id: string;
+    ownerName: string;
+    keyLabel: string;
+    fingerprint: string;
+    remoteUser: string;
+    state: 'pending' | 'active';
+    expiresAt: number;
+  }>;
+}
+
+/** 删除过的机器标识。拿它去装 agent 会被面板拒绝，直到有人允许它重新接入 */
+export interface DeletedNode {
+  id: string;
+  name: string;
+  deletedAt: number;
+  deletedBy: string;
+  /** 删除之后那台机器的采集端最近一次来敲门的时刻，0 = 没回来过 */
+  lastAttempt: number;
+}
+
 export interface EventLog {
   id: string;
   nodeId: string | null;

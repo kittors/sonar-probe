@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -122,12 +123,29 @@ func main() {
 
 	// 先读本地缓存的密钥，注册成功后会被换发的新值覆盖
 	cfg.secret = loadSecret(cfg.stateDir)
+	removed := false
 	if err := register(ctx, &cfg, collector); err != nil {
-		log.Printf("注册失败（将继续尝试上报）：%v", err)
+		if isRemoved(err) {
+			removed = true
+			noteRemoved(err)
+		} else {
+			log.Printf("注册失败（将继续尝试上报）：%v", err)
+		}
 	}
 
 	ticker := time.NewTicker(cfg.interval)
 	defer ticker.Stop()
+
+	/*
+	 * 被面板删除之后的复查。
+	 *
+	 * 删除不等于卸载：面板删了这台机器，机器上的 agent 并不知道，它会继续两秒一次
+	 * 地上报、一次次被拒，日志一天攒下四万多行同一句话。收到 410 之后停掉上报，
+	 * 改成隔一阵问一次面板"我能回来了吗" —— 有人在面板上允许它重新接入，
+	 * 它就自己恢复，不用登上机器重启。
+	 */
+	recheck := time.NewTicker(removedRecheck)
+	defer recheck.Stop()
 
 	/*
 	 * 到期清理独立于上报节奏，也独立于面板。
@@ -147,14 +165,45 @@ func main() {
 			log.Println("收到退出信号，停止上报")
 			return
 
+		// 被删除之后也照常清理：临时授权按时失效这件事不能依赖面板还认不认这台机器
 		case <-pruner.C:
 			if n := ssh.pruneExpired(); n > 0 {
 				log.Printf("清理了 %d 条已过期的 SSH 授权", n)
 			}
 
+		case <-recheck.C:
+			if !removed {
+				continue
+			}
+			if err := register(ctx, &cfg, collector); err != nil {
+				if !isRemoved(err) {
+					log.Printf("复查能否重新接入失败：%v", err)
+				}
+				continue
+			}
+			removed = false
+			/*
+			 * 休眠期间攒下的归因增量不能补报。
+			 *
+			 * 面板那边这台机器是从零开始的，账本的第一拍不计增量；归因却一次带上
+			 * 几天的量，两边就永远对不上了。先采一拍推进基线，再把积压整个丢掉。
+			 */
+			if _, err := collector.Sample(); err == nil {
+				collector.CommitReported()
+			}
+			log.Printf("面板已允许这台机器重新接入，恢复上报")
+
 		case <-ticker.C:
+			if removed {
+				continue
+			}
 			cmds, err := reportOnce(ctx, cfg, collector)
 			if err != nil {
+				if isRemoved(err) {
+					removed = true
+					noteRemoved(err)
+					continue
+				}
 				// 上报失败不退出：面板重启、网络抖动都是常态，下一拍继续试
 				log.Printf("上报失败：%v", err)
 				continue
@@ -348,6 +397,51 @@ func ackCommand(ctx context.Context, cfg config, res CommandResult) error {
 	}, nil)
 }
 
+// removedRecheck 是被面板删除之后，多久问一次"能不能回来了"。
+//
+// 被删的机器多半就不回来了，问得勤只是给面板添噪音；而真被误删、
+// 在面板上点了"允许重新接入"的人，等十分钟也能接受。
+const removedRecheck = 10 * time.Minute
+
+// noteRemoved 只在状态切换时打一次。被删的机器上这句话每两秒刷一遍，
+// 就是一天四万多行 —— 而真正有用的信息只有第一行。
+func noteRemoved(err error) {
+	log.Printf("面板拒绝了这台机器，停止上报，之后每 %s复查一次能否重新接入。面板的说明：%v",
+		spokenDuration(removedRecheck), err)
+}
+
+// spokenDuration 把间隔说成人话。不整分钟的按秒说 —— 按分钟取整的话，
+// 90 秒会被说成"每 1 分钟"，15 秒会被说成"每 0 分钟"。
+func spokenDuration(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		return fmt.Sprintf(" %d 分钟", int(d/time.Minute))
+	}
+	return fmt.Sprintf(" %d 秒", int(d/time.Second))
+}
+
+// httpError 是面板回的非 2xx。留着状态码，调用方才分得清"等等再试"和"别再来了"。
+type httpError struct {
+	code   int
+	status string
+	msg    string
+}
+
+func (e *httpError) Error() string {
+	if e.msg != "" {
+		return fmt.Sprintf("%s: %s", e.status, e.msg)
+	}
+	return e.status
+}
+
+// isRemoved 判断面板是不是在说"这台机器已经被删了"。
+//
+// 只认 410：400、401、5xx 都可能是一时的（token 配错了正在改、面板在重启），
+// 把它们当成被删会让 agent 进入十分钟一次的慢节奏，白白丢掉一段数据。
+func isRemoved(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.code == http.StatusGone
+}
+
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
 func postJSON(ctx context.Context, url string, body any, out any) error {
@@ -372,10 +466,7 @@ func postJSON(ctx context.Context, url string, body any, out any) error {
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&msg)
-		if msg.Error != "" {
-			return fmt.Errorf("%s: %s", resp.Status, msg.Error)
-		}
-		return fmt.Errorf("%s", resp.Status)
+		return &httpError{code: resp.StatusCode, status: resp.Status, msg: msg.Error}
 	}
 	if out == nil {
 		return nil

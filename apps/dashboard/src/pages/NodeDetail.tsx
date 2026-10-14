@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { api } from '../lib/api';
-import { useAsync, useLiveNode } from '../lib/live';
+import { dropLiveNode, useAsync, useLiveNode } from '../lib/live';
 import { useAuth } from '../lib/auth';
 import { trafficDirectionLabel, useSettings } from '../lib/settings';
 import type { BlockRule, NodeState, PeerTraffic } from '../lib/types';
@@ -46,6 +46,7 @@ import {
   type RangePreset,
 } from '../components/DateRangePicker';
 import { NodeEditDialog } from '../components/NodeEditDialog';
+import { NodeDeleteDialog } from '../components/NodeDeleteDialog';
 import { CountryBadge } from '../components/CountryBadge';
 import { Tooltip } from '../components/Tooltip';
 import {
@@ -92,9 +93,11 @@ export function NodeDetail() {
   const { id } = useParams<{ id: string }>();
   const { node, ready } = useLiveNode(id);
   const { can } = useAuth();
+  const navigate = useNavigate();
 
   const [tab, setTab] = useState<Tab>('load');
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [range, setRange] = useState<MetricRange>('1h');
   const [blockTarget, setBlockTarget] = useState<PeerTraffic | null>(null);
 
@@ -299,7 +302,7 @@ export function NodeDetail() {
             操作放在页头右侧，带文字的次级按钮。之前是标题旁边两个无字小图标，
             不悬停根本不知道一个是"去服务商控制台"、一个是"编辑"。
           */}
-          {(panelUrl || can('node:manage')) && (
+          {(panelUrl || can('node:manage') || can('node:delete')) && (
             <div className="ds-page-actions">
               {panelUrl && (
                 <a
@@ -318,6 +321,17 @@ export function NodeDetail() {
                 <button className="ds-btn ds-btn-ghost" onClick={() => setEditing(true)}>
                   <IconEdit size={14} />
                   编辑
+                </button>
+              )}
+              {/* 和编辑并排、用红字区分：删除低频但必须找得到，藏进菜单里人会以为没有这个功能 */}
+              {can('node:delete') && (
+                <button
+                  className="ds-btn ds-btn-ghost"
+                  style={{ color: 'var(--color-danger)' }}
+                  onClick={() => setDeleting(true)}
+                >
+                  <IconTrash size={14} />
+                  删除
                 </button>
               )}
             </div>
@@ -772,6 +786,19 @@ export function NodeDetail() {
           peer={blockTarget}
           onClose={() => setBlockTarget(null)}
           onDone={afterBlock}
+        />
+      )}
+
+      {deleting && (
+        <NodeDeleteDialog
+          nodeId={node.id}
+          nodeName={node.name}
+          onClose={() => setDeleting(false)}
+          onDeleted={() => {
+            dropLiveNode(node.id);
+            // replace：后退键不该把人带回一台已经不存在的机器
+            navigate('/', { replace: true });
+          }}
         />
       )}
     </>

@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { db } from './db.js';
 import { dayKeyIn, getSettings } from './settings.js';
 import { logEvent } from './store.js';
+import { NodeDeletedError, deletedNode } from './tombstones.js';
 import type { Metric } from './types.js';
 
 /**
@@ -193,6 +194,15 @@ export function nodeSecretValid(nodeId: string, secret: string | undefined): boo
 
 /** agent 首次连上或重启后调用，写入机器画像。 */
 export function registerAgentNode(info: AgentNodeInfo): { created: boolean } {
+  /*
+   * 被删除的机器不能借注册回来。
+   *
+   * 这道判断放在这里而不只是挂在路由上：注册是"没有就新建"，
+   * 任何一条走到下面那句 INSERT 的路径漏掉它，删除就形同虚设。
+   */
+  const tomb = deletedNode(info.id);
+  if (tomb) throw new NodeDeletedError(tomb);
+
   const now = Date.now();
   const existing = db.prepare('SELECT id, source FROM nodes WHERE id = ?').get(info.id) as
     | { id: string; source: string }
@@ -285,6 +295,18 @@ export function resetTotalsCache(): void {
   lastTotals.clear();
 }
 
+/**
+ * 机器被删除时清掉它留在内存里的痕迹。
+ *
+ * lastTotals 不清的话，同一个标识日后解除删除、重新接入，第一拍会拿删除前的
+ * 累计值去做差：新机器的计数器若恰好比旧值大，那段差额会被当成"今天的流量"
+ * 凭空记进账本。库里那一侧没有这个问题 —— metrics 跟着机器一起清掉了。
+ */
+export function forgetAgentNode(nodeId: string): void {
+  lastTotals.delete(nodeId);
+  snapshotAgentWarnedAt.delete(nodeId);
+}
+
 function previousTotals(nodeId: string): { rx: number; tx: number } | null {
   const cached = lastTotals.get(nodeId);
   if (cached) return cached;
@@ -300,7 +322,12 @@ export function ingestReport(report: AgentReport, remoteIp: string): void {
     | { id: string; source: string; ip: string }
     | undefined;
 
-  if (!node) throw new Error(`未知节点 ${nodeId}，请先调用 /api/agent/register`);
+  if (!node) {
+    // 正常上报不多花这次查询：只有找不到机器时才去看它是不是被删了
+    const tomb = deletedNode(nodeId);
+    if (tomb) throw new NodeDeletedError(tomb);
+    throw new Error(`未知节点 ${nodeId}，请先调用 /api/agent/register`);
+  }
   if (node.source !== 'agent') throw new Error(`节点 ${nodeId} 不是采集端节点`);
 
   const now = Date.now();

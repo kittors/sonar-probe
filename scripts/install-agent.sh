@@ -485,6 +485,11 @@ RECENT="$(journalctl -u sonar-agent -n 30 --no-pager 2>/dev/null || echo '')"
 if printf '%s' "$RECENT" | grep -qiE '401|token'; then
   warn "日志里出现认证失败 —— token 和面板上的 SONAR_AGENT_TOKEN 对不上"
 fi
+# 410：这个标识在面板上被删过，面板会一直拒绝它，直到有人允许它回来
+if printf '%s' "$RECENT" | grep -q '410 Gone'; then
+  warn "面板拒绝了 $NODE_ID —— 这个标识之前在面板上被删除过"
+  warn "到面板「接入新机器」里输入 $NODE_ID、允许它重新接入，然后执行：systemctl restart sonar-agent"
+fi
 
 step "安装完成"
 

@@ -231,6 +231,19 @@ class LiveStore {
 
   onBlock: ((rule: BlockRule) => void) | null = null;
 
+  /**
+   * 本地先把一台机器拿掉。
+   *
+   * 删除接口的响应和服务端推来的新列表走的是两条连接，谁先到不一定 ——
+   * 不先拿掉的话，删完跳回概览可能还看见它在那儿，人会以为没删成又回去点一次。
+   * 服务端随后推来的列表本来就不含它，两边自然对齐。
+   */
+  dropNode(id: string): void {
+    this.nodes = this.nodes.filter((n) => n.id !== id);
+    this.persist();
+    this.emit();
+  }
+
   seedEvents(events: EventLog[]): void {
     if (this.events.length === 0) {
       this.events = events;
@@ -256,6 +269,10 @@ export function useLive() {
 
 export function seedEvents(events: EventLog[]): void {
   store.seedEvents(events);
+}
+
+export function dropLiveNode(id: string): void {
+  store.dropNode(id);
 }
 
 /**

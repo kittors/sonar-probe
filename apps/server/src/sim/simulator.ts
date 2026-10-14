@@ -628,10 +628,15 @@ export function tick(dtSec: number): Metric[] {
   const day = dayKey(now);
   const out: Metric[] = [];
 
-  // 真实机器的数据由 agent 上报，模拟器一拍都不能碰它们，
-  // 否则真实指标会被虚构数据当场覆盖掉。
-  const realNodes = new Set(
-    (db.prepare("SELECT id FROM nodes WHERE source='agent'").all() as Array<{ id: string }>).map(
+  /*
+   * 只推进库里还在的模拟机器。
+   *
+   * 真实机器的数据由 agent 上报，模拟器一拍都不能碰，否则真实指标会被虚构数据
+   * 当场覆盖掉。被删掉的模拟机器同样不能碰：种子列表写死在代码里，
+   * 不按库过滤的话，它会在 metrics 里一直长出没有主人的行。
+   */
+  const simNodes = new Set(
+    (db.prepare("SELECT id FROM nodes WHERE source='sim'").all() as Array<{ id: string }>).map(
       (r) => r.id,
     ),
   );
@@ -640,7 +645,7 @@ export function tick(dtSec: number): Metric[] {
   try {
     for (const st of states.values()) {
       if (!st.online) continue;
-      if (realNodes.has(st.seed.id)) continue;
+      if (!simNodes.has(st.seed.id)) continue;
       const m = advance(st, now, dtSec);
       out.push(m);
 
